@@ -4,6 +4,14 @@ build/
 installer/*.exe
 *.exe
 
+# Flutter mobile artifacts
+videocut_mobile/.dart_tool/
+videocut_mobile/build/
+videocut_mobile/.flutter-plugins
+videocut_mobile/.flutter-plugins-dependencies
+*.apk
+*.aab
+
 # Python bytecode and cache
 __pycache__/
 *.py[cod]

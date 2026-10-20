@@ -72,34 +72,52 @@ Hasil build:
 
 ---
 
+## VideoCut Mobile (Android APK)
+
+VideoCut kini tersedia untuk perangkat smartphone Android dengan antarmuka sentuh vertikal (CapCut Mobile style layout):
+
+- **Kanvas Responsif**: Rasio 9:16 (TikTok/Shorts/Reels), 16:9 (YouTube), 1:1, dan 4:5.
+- **Touch Timeline**: Multi-track video, audio, teks dengan pinch-to-zoom dan split cepat.
+- **Color Grading & Filters**: Pengaturan Brightness, Contrast, Saturation, dan Vignette secara real-time.
+- **Export Engine**: Pilihan resolusi 720p, 1080p, dan 4K hingga 60 FPS tanpa watermark.
+- **Kompatibilitas**: Android 7.0+ (Min SDK 24, Target SDK 34), Universal ARM64 / x86_64.
+
+### Instalasi APK ke HP Android:
+1. Salin file `VideoCut.apk` ke HP melalui kabel USB, Bluetooth, atau Google Drive.
+2. Di HP Android, buka file manager dan ketuk `VideoCut.apk`.
+3. Izinkan *"Install unknown apps"* (jika diminta) dan pilih **Install**.
+4. Aplikasi siap digunakan secara offline.
+
+### Membangun Ulang APK dari Source:
+```bash
+cd videocut_mobile
+flutter build apk --release
+```
+File output akan berada di: `videocut_mobile/build/app/outputs/flutter-apk/app-release.apk`.
+
+---
+
 ## Struktur Proyek
 
 ```
 VideoCut/
-├── assets/                  # Icon dan aset antarmuka
-├── installer/               # Script NSIS installer (setup.nsi)
-├── src/
-│   ├── core/                # Engine inti video, audio, AI, dan keyframe
-│   │   ├── ai_background.py # Penggantian background video AI
-│   │   ├── audio_fx.py      # Pengolahan audio & noise reduction
-│   │   ├── auto_caption.py  # Generator subtitle otomatis (Whisper)
-│   │   ├── beat_sync.py     # Deteksi beat musik (Librosa)
-│   │   ├── bg_remover.py    # Segmentasi dan penghapusan background
-│   │   ├── kenburns.py      # Efek pan & zoom animasi
-│   │   ├── keyframe_engine.py # Interpolasi keyframe animasi
-│   │   ├── project.py       # Manajemen data dan serialisasi proyek
-│   │   └── video_player.py  # Playback frame controller
-│   └── ui/                  # Komponen tampilan PyQt6
-│       ├── main_window.py   # Jendela utama editor
-│       ├── timeline_panel.py# Panel multi-track timeline
-│       ├── preview_panel.py # Monitor pemutar video
-│       ├── media_panel.py   # Panel aset media
-│       ├── properties_panel.py # Pengaturan klip dan transformasi
-│       ├── effects_panel.py # Pilihan filter dan efek video
-│       └── export_dialog.py # Dialog konfigurasi render video
+├── assets/                  # Icon dan aset antarmuka desktop
+├── installer/               # Script NSIS installer Windows (setup.nsi)
+├── src/                     # Source code desktop (PyQt6 / Python)
+├── videocut_mobile/         # Subproject mobile Android (Flutter / Dart)
+│   ├── android/             # Android native Gradle configuration & Manifest
+│   ├── lib/
+│   │   ├── editor_state.dart# Core state management (tracks, clips, filters)
+│   │   ├── main.dart        # Entry point aplikasi Android
+│   │   └── ui/
+│   │       ├── editor_screen.dart # Layar utama editor CapCut Mobile
+│   │       └── widgets/     # Preview canvas, touch timeline, bottom toolbar, export modal
+│   └── pubspec.yaml         # Dependensi Flutter
+├── VideoCut.apk             # Installer Android APK siap pakai
+├── VideoCut_Setup.exe       # Installer Windows PC siap pakai
 ├── build_installer.bat      # Script otomasi build PyInstaller + NSIS
-├── main.py                  # Entry point aplikasi
-├── requirements.txt         # Daftar paket Python
+├── main.py                  # Entry point aplikasi desktop
+├── requirements.txt         # Daftar paket Python desktop
 └── videocut.spec            # Konfigurasi bundling PyInstaller
 ```
 
