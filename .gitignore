@@ -1,0 +1,23 @@
+# Build outputs and large executables
+dist/
+build/
+installer/*.exe
+*.exe
+
+# Python bytecode and cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.spec.bak
+*.egg-info/
+
+# Environments
+venv/
+.venv/
+env/
+
+# IDE and temporary files
+.vscode/
+.idea/
+*.tmp
+*.log

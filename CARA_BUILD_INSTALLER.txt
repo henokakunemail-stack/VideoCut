@@ -1,0 +1,88 @@
+========================================================
+  CARA MEMBUAT INSTALLER .EXE — VideoCut v2
+========================================================
+
+CARA PALING MUDAH:
+  Dobel-klik: build_installer.bat
+  Tunggu selesai (~3-5 menit), lalu installer ada di:
+  installer\VideoCut_Setup.exe
+
+========================================================
+LANGKAH MANUAL (jika build_installer.bat gagal):
+========================================================
+
+PERSIAPAN (sekali saja):
+------------------------
+1. Install Python 3.10+ dari https://python.org
+   PENTING: centang "Add Python to PATH" saat install
+
+2. Install dependencies:
+   Buka CMD di folder ini, ketik:
+   > pip install PyQt6 opencv-python numpy pyinstaller
+
+3. Install NSIS (untuk buat Setup.exe):
+   Download dari https://nsis.sourceforge.io/Download
+   Install seperti biasa
+
+LANGKAH BUILD:
+--------------
+1. Buka CMD di folder videocut\ ini
+
+2. Jalankan PyInstaller:
+   > pyinstaller videocut.spec --noconfirm
+
+   Tunggu 1-3 menit. Hasilnya ada di folder dist\VideoCut\
+
+3. Test dulu:
+   > dist\VideoCut\VideoCut.exe
+
+4. Build installer Setup.exe:
+   > makensis installer\setup.nsi
+
+   Hasilnya: installer\VideoCut_Setup.exe
+
+========================================================
+HASIL OUTPUT:
+========================================================
+
+A) PORTABLE (langsung pakai, tanpa install):
+   dist\VideoCut\VideoCut.exe
+   → Copy seluruh folder dist\VideoCut\ ke PC lain
+   → Tidak perlu Python terinstall
+
+B) INSTALLER (Setup.exe dengan wizard):
+   installer\VideoCut_Setup.exe
+   → Install ke Program Files
+   → Tambah shortcut di Desktop & Start Menu
+   → Ada uninstaller di Control Panel
+
+========================================================
+TROUBLESHOOTING:
+========================================================
+
+"ModuleNotFoundError: No module named 'PyQt6'"
+→ pip install PyQt6
+
+"Failed to execute script" saat run .exe
+→ Coba jalankan dari CMD untuk lihat error:
+  > dist\VideoCut\VideoCut.exe
+  → Jika error cv2: pip install opencv-python
+
+App jalan tapi layar hitam / kosong
+→ Ini biasanya masalah Qt platform plugin
+→ Pastikan folder dist\VideoCut\PyQt6\Qt6\plugins\platforms\ ada
+
+NSIS error "can't open file"
+→ Pastikan PyInstaller sudah selesai dulu (step 2)
+→ Folder dist\VideoCut\ harus ada
+
+========================================================
+UKURAN ESTIMASI:
+========================================================
+- Folder dist\VideoCut\  : ~150-250 MB
+- installer\Setup.exe       : ~80-120 MB (terkompresi LZMA)
+
+Ukuran ini normal karena include Python runtime,
+PyQt6 framework, dan OpenCV.
+
+========================================================
