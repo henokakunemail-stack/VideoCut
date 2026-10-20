@@ -1,4 +1,4 @@
-package com.henok.videocut_mobile
+package com.henok.videocut
 
 import io.flutter.embedding.android.FlutterActivity
 

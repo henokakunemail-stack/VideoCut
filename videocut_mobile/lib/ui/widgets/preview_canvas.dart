@@ -50,8 +50,8 @@ class PreviewCanvas extends StatelessWidget {
 
     // Color filter matrix
     // ponytail: ColorMatrix handles contrast and brightness in 1 pass. Upgrade to fragment shader for 3D LUT.
-    final c = state.contrast;
-    final b = state.brightness * 255;
+    final c = (state.contrast.isFinite ? state.contrast : 1.0).clamp(0.0, 5.0);
+    final b = (state.brightness.isFinite ? state.brightness * 255.0 : 0.0).clamp(-255.0, 255.0);
     final colorMatrix = <double>[
       c, 0, 0, 0, b,
       0, c, 0, 0, b,

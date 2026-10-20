@@ -45,9 +45,25 @@ class ClipItem {
 }
 
 class EditorState extends ChangeNotifier {
+  bool _disposed = false;
   int currentTimeMs = 0;
   bool isPlaying = false;
   Timer? _playbackTimer;
+
+  @override
+  void notifyListeners() {
+    if (_disposed) return;
+    super.notifyListeners();
+  }
+
+  void pause() {
+    if (isPlaying) {
+      isPlaying = false;
+      _playbackTimer?.cancel();
+      _playbackTimer = null;
+      notifyListeners();
+    }
+  }
 
   double timelineZoom = 1.0;
   AspectRatioMode aspectRatio = AspectRatioMode.ratio9_16;
@@ -201,7 +217,9 @@ class EditorState extends ChangeNotifier {
 
   @override
   void dispose() {
+    _disposed = true;
     _playbackTimer?.cancel();
+    _playbackTimer = null;
     super.dispose();
   }
 }

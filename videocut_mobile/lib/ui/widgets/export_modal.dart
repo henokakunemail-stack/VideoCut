@@ -30,6 +30,7 @@ class _ExportModalState extends State<ExportModal> {
   @override
   void dispose() {
     _exportTimer?.cancel();
+    _exportTimer = null;
     super.dispose();
   }
 
@@ -52,6 +53,10 @@ class _ExportModalState extends State<ExportModal> {
 
     _exportTimer?.cancel();
     _exportTimer = Timer.periodic(const Duration(milliseconds: 50), (timer) {
+      if (!mounted) {
+        timer.cancel();
+        return;
+      }
       setState(() {
         _progress += 0.025;
         if (_progress >= 1.0) {
