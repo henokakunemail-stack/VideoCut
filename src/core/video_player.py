@@ -69,9 +69,14 @@ class ImageReader:
         self._load()
 
     def _load(self):
-        img = cv2.imread(self.path)
+        img = cv2.imread(self.path, cv2.IMREAD_UNCHANGED)  # keeps PNG alpha
         if img is not None:
-            self._img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            if img.ndim == 2:
+                img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+            if img.dtype != np.uint8:
+                img = (img.astype(np.float32) / (65535.0 if img.dtype == np.uint16 else 1.0)
+                       * 255).clip(0, 255).astype(np.uint8)
+            self._img = cv2.cvtColor(img, cv2.COLOR_BGRA2RGBA if img.shape[2] == 4 else cv2.COLOR_BGR2RGB)
             self.height, self.width = self._img.shape[:2]
 
     def read_frame(self, time_ms: int = 0) -> np.ndarray:
@@ -156,6 +161,29 @@ class FrameProcessor:
             d = int(smooth * 20) + 5
             sigma = smooth * 50 + 20
             result = cv2.bilateralFilter(img8, d, sigma, sigma).astype(np.float32) / 255.0
+
+        # Whitening: lift brightness, weighted towards midtones/shadows so highlights don't clip
+        wh = getattr(clip, 'whitening', 0)
+        if wh > 0:
+            result = np.clip(result + wh * 0.25 * (1.0 - result * 0.5), 0, 1)
+
+        # Skin tone: -1 cool/pale .. +1 warm/rosy
+        st = getattr(clip, 'skin_tone', 0)
+        if st != 0:
+            result = result.copy()
+            result[..., 0] += st * 0.06
+            result[..., 1] += st * 0.015
+            result[..., 2] -= st * 0.05
+            result = np.clip(result, 0, 1)
+
+        # Dehaze: stretch contrast per-frame using the dark channel as haze estimate
+        dh = getattr(clip, 'dehaze', 0)
+        if dh > 0:
+            dark = cv2.erode(result.min(axis=2), np.ones((15, 15), np.uint8))
+            airlight = max(float(np.percentile(dark, 99)), 0.5)
+            t = 1.0 - dh * 0.9 * np.clip(dark / airlight, 0, 1)
+            t = np.clip(t, 0.2, 1.0)[..., np.newaxis]
+            result = np.clip((result - airlight) / t + airlight, 0, 1)
 
         # Clarity / Dehaze
         if getattr(clip, 'clarity', 0) > 0:
@@ -598,16 +626,23 @@ class FrameProcessor:
 
     @staticmethod
     def apply_mask(frame: np.ndarray, mask_type: str,
-                   feather: float = 0.1) -> np.ndarray:
-        """Apply shape mask to frame."""
+                   feather: float = 0.1, inverted: bool = False) -> np.ndarray:
+        """Apply shape mask to frame (outside the shape becomes black)."""
         h, w = frame.shape[:2]
+        m = FrameProcessor.mask_alpha(h, w, mask_type, feather, inverted)
+        return (frame.astype(np.float32) * m[..., np.newaxis]).astype(np.uint8)
+
+    @staticmethod
+    def mask_alpha(h: int, w: int, mask_type: str, feather: float = 0.1,
+                   inverted: bool = False) -> np.ndarray:
+        """Shape mask as float32 HxW alpha in 0..1."""
         mask = np.zeros((h, w), dtype=np.uint8)
 
         if mask_type == 'circle':
             cx, cy = w // 2, h // 2
             r = min(cx, cy) - int(min(cx, cy) * feather)
             cv2.circle(mask, (cx, cy), r, 255, -1)
-        elif mask_type == 'rect':
+        elif mask_type in ('rect', 'rectangle'):
             margin = int(min(h, w) * feather)
             cv2.rectangle(mask, (margin, margin), (w - margin, h - margin), 255, -1)
         elif mask_type == 'star':
@@ -630,10 +665,8 @@ class FrameProcessor:
             ksize = int(min(h, w) * feather) * 2 + 1
             mask = cv2.GaussianBlur(mask, (ksize, ksize), 0)
 
-        result = frame.copy()
-        mask_f = mask.astype(np.float32) / 255.0
-        result = (result.astype(np.float32) * mask_f[..., np.newaxis]).astype(np.uint8)
-        return result
+        m = mask.astype(np.float32) / 255.0
+        return 1.0 - m if inverted else m
 
     @staticmethod
     def apply_lut(frame: np.ndarray, lut_name: str) -> np.ndarray:

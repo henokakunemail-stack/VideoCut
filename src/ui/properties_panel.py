@@ -187,6 +187,12 @@ class PropertiesPanel(QWidget):
         self.chroma_tab = self._build_chroma_tab()
         self.tabs.addTab(self.chroma_tab, "🟩 Chroma")
 
+        # FX tab (motion blur, tilt-shift, glitch, VHS, ...)
+        from src.ui.effects_panel import EffectsPanel
+        self.effects_panel = EffectsPanel()
+        self.effect_params_changed = self.effects_panel.effect_params_changed
+        self.tabs.addTab(self.effects_panel, "FX")
+
         layout.addWidget(self.tabs, 1)
 
     def _build_color_tab(self) -> QWidget:

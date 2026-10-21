@@ -23,6 +23,9 @@ librosa>=0.10.0
 # Audio DSP / Voice FX
 scipy>=1.10.0
 
+# Bundled ffmpeg binary (export + audio extraction; no system install needed)
+imageio-ffmpeg>=0.4.9
+
 # Audio extraction helper (ffmpeg wrapper)
 # ffmpeg must also be installed on system:
 #   Windows: winget install ffmpeg  OR  choco install ffmpeg

@@ -206,6 +206,7 @@ class MainWindow(QMainWindow):
     def _connect_signals(self):
         # Media panel -> timeline
         self.media_panel.media_added.connect(self._on_media_added)
+        self.media_panel.filter_selected.connect(self._on_filter_selected)
 
         # Timeline -> preview
         self.timeline_panel.time_changed.connect(self._on_time_changed)
@@ -219,6 +220,7 @@ class MainWindow(QMainWindow):
 
         # Properties -> project update
         self.properties_panel.clip_changed.connect(self._on_clip_property_changed)
+        self.properties_panel.effect_params_changed.connect(self._on_effect_params_changed)
 
         # Toolbar
         self.top_toolbar.export_clicked.connect(self._export_video)
@@ -391,6 +393,21 @@ class MainWindow(QMainWindow):
         clip = self.project.get_clip(clip_id)
         self.properties_panel.set_clip(clip)
 
+    def _on_filter_selected(self, name: str, filter_id: str):
+        clip = self._get_selected_clip()
+        if not clip:
+            self.status_bar.showMessage("Select a clip first to apply a filter")
+            return
+        clip.filter_id = filter_id
+        self._on_clip_property_changed(clip.id)
+
+    def _on_effect_params_changed(self, effect_id: str, params: dict):
+        from src.core.renderer import set_effect
+        clip = self._get_selected_clip()
+        if clip:
+            set_effect(clip, effect_id, params)
+            self._on_clip_property_changed(clip.id)
+
     def _on_clip_deleted(self, clip_id: str):
         self.project.remove_clip(clip_id)
         self.properties_panel.clear()
@@ -529,26 +546,14 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Ken Burns",
                 "Select a video or image clip first.")
             return
-        try:
-            from src.core.keyframe_engine import KeyframeEngine, Keyframe
-            engine = KeyframeEngine()
-            # Ken Burns: zoom from 1.0→1.2 over clip duration
-            dur = clip.timeline_end - clip.timeline_start
-            engine.add_keyframe(clip, Keyframe(time_ms=0, property='scale',
-                                               value=1.0, easing='ease_in_out'))
-            engine.add_keyframe(clip, Keyframe(time_ms=dur, property='scale',
-                                               value=1.2, easing='ease_in_out'))
-            # Gentle pan right
-            engine.add_keyframe(clip, Keyframe(time_ms=0, property='position_x',
-                                               value=0.0, easing='ease_in_out'))
-            engine.add_keyframe(clip, Keyframe(time_ms=dur, property='position_x',
-                                               value=0.05, easing='ease_in_out'))
-            engine.apply_keyframes_to_clip(clip)
-            self._on_clip_property_changed(clip.id)
-            self.status_bar.showMessage(f"Ken Burns applied to clip: {clip.id[:8]}…")
-        except ImportError as e:
-            QMessageBox.warning(self, "Ken Burns",
-                f"Could not load keyframe engine:\n{e}")
+        # zoom 1.0 -> 1.2 with a gentle pan right over the whole clip
+        end = clip.duration / 1000.0
+        clip.keyframes = [
+            {'time': 0.0, 'props': {'scale': 1.0, 'pos_x': 0.0}, 'easing': 'ease_in_out'},
+            {'time': end, 'props': {'scale': 1.2, 'pos_x': 0.1}, 'easing': 'ease_in_out'},
+        ]
+        self._on_clip_property_changed(clip.id)
+        self.status_bar.showMessage(f"Ken Burns applied to clip: {clip.id[:8]}…")
 
     def _open_keyframes(self):
         """Open keyframe animation panel for selected clip."""
@@ -559,22 +564,29 @@ class MainWindow(QMainWindow):
             return
         try:
             from src.ui.keyframe_panel import KeyframePanel
-            dlg = KeyframePanel(clip, self)
+            from src.core.keyframe_engine import KeyframeAnimator, KeyframeTrack
+            animator = KeyframeAnimator()
+            animator._tracks[clip.id] = KeyframeTrack.from_dict(
+                {'clip_id': clip.id, 'keyframes': [k for k in clip.keyframes if 'props' in k]})
+            dlg = KeyframePanel(animator, self)
             dlg.setWindowFlags(Qt.WindowType.Window)
-            dlg.setWindowTitle(f"Keyframes — {os.path.basename(clip.source_path)}")
-            dlg.resize(700, 360)
-            dlg.keyframe_added.connect(self._on_keyframe_added)
+            dlg.setWindowTitle(f"Keyframes — {os.path.basename(clip.source_path) or clip.clip_type.value}")
+            dlg.resize(420, 640)
+            dlg.set_clip(clip.id)
+            dlg.set_time(max(0.0, (self.current_time_ms - clip.timeline_start) / 1000.0))
+            sync = lambda *_: self._sync_keyframes(clip.id, animator)
+            dlg.keyframe_changed.connect(sync)
+            dlg.keyframe_removed.connect(sync)
             dlg.show()
         except ImportError as e:
             QMessageBox.warning(self, "Keyframes",
                 f"Could not load keyframe panel:\n{e}")
 
-    def _on_keyframe_added(self, clip_id: str, time_ms: int, prop: str, value: float):
+    def _sync_keyframes(self, clip_id: str, animator):
         clip = self.project.get_clip(clip_id)
         if clip:
-            kf = {'time_ms': time_ms, 'property': prop, 'value': value}
-            if kf not in clip.keyframes:
-                clip.keyframes.append(kf)
+            clip.keyframes = animator.get_track(clip_id).to_dict()['keyframes']
+            self.project.is_modified = True
             self._on_clip_property_changed(clip_id)
 
     def _get_selected_clip(self):

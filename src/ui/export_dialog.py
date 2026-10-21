@@ -28,84 +28,9 @@ class ExportWorker(QObject):
 
     def run(self):
         try:
-            import cv2
-            import numpy as np
-            from src.core.video_player import VideoReader, ImageReader, FrameProcessor, frame_to_pixmap
-
-            out_path = self.settings['output_path']
-            fps = self.settings['fps']
-            width = self.settings['width']
-            height = self.settings['height']
-            duration_ms = self.project.settings.duration
-
-            if duration_ms == 0:
-                self.finished.emit(False, "No content to export (empty timeline).")
-                return
-
-            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-            writer = cv2.VideoWriter(out_path, fourcc, fps, (width, height))
-
-            readers = {}
-            total_frames = int(duration_ms / 1000 * fps)
-
-            for frame_idx in range(total_frames):
-                if self._cancel:
-                    writer.release()
-                    self.finished.emit(False, "Export cancelled.")
-                    return
-
-                time_ms = int(frame_idx / fps * 1000)
-                clips = self.project.get_clips_at_time(time_ms)
-
-                # Render frame
-                frame = np.zeros((height, width, 3), dtype=np.uint8)
-
-                for clip in clips:
-                    if clip.track != 0:
-                        continue
-                    path = clip.source_path
-                    if clip.clip_type.value == "video":
-                        if path not in readers:
-                            r = VideoReader(path)
-                            if r.is_valid():
-                                readers[path] = r
-                        reader = readers.get(path)
-                        if reader:
-                            dur = clip.duration
-                            ratio = (time_ms - clip.timeline_start) / max(1, dur)
-                            src_t = clip.source_start + int(ratio * (clip.source_end - clip.source_start))
-                            raw = reader.read_frame(src_t)
-                            if raw is not None:
-                                raw = FrameProcessor.apply_flip(raw, clip.flip_h, clip.flip_v)
-                                raw = FrameProcessor.apply_filter(raw, clip.filter_id, clip.filter_intensity)
-                                raw = FrameProcessor.apply_color_correction(raw, clip)
-                                resized = cv2.resize(raw, (width, height))
-                                frame = resized
-                    elif clip.clip_type.value == "image":
-                        if path not in readers:
-                            readers[path] = ImageReader(path)
-                        reader = readers.get(path)
-                        if reader:
-                            raw = reader.read_frame()
-                            if raw is not None:
-                                raw = FrameProcessor.apply_color_correction(raw, clip)
-                                resized = cv2.resize(raw, (width, height))
-                                frame = resized
-
-                # Write frame (BGR)
-                bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-                writer.write(bgr)
-
-                progress = int((frame_idx + 1) / total_frames * 100)
-                self.progress.emit(progress)
-
-            writer.release()
-            for r in readers.values():
-                if hasattr(r, 'close'):
-                    r.close()
-
-            self.finished.emit(True, f"Exported to: {out_path}")
-
+            from src.core.exporter import export_project
+            ok, msg = export_project(self.project, self.settings, self.progress.emit, lambda: self._cancel)
+            self.finished.emit(ok, msg)
         except Exception as e:
             self.finished.emit(False, f"Export failed: {e}")
 
@@ -173,7 +98,7 @@ class ExportDialog(QDialog):
 
         vid_layout.addWidget(QLabel("Format:"), 3, 0)
         self.format_combo = QComboBox()
-        self.format_combo.addItems(["MP4 (H.264)", "WebM", "AVI"])
+        self.format_combo.addItems(["MP4 (H.264)", "MP4 (H.265/HEVC)", "MOV (ProRes 422 HQ)", "WebM (VP9)", "AVI (MPEG-4)"])
         vid_layout.addWidget(self.format_combo, 3, 1)
 
         layout.addWidget(vid_group)
@@ -212,7 +137,7 @@ class ExportDialog(QDialog):
     def _browse(self):
         path, _ = QFileDialog.getSaveFileName(
             self, "Save Video As", "output.mp4",
-            "MP4 Video (*.mp4);;WebM Video (*.webm);;AVI Video (*.avi)"
+            "MP4 Video (*.mp4);;MOV Video (*.mov);;WebM Video (*.webm);;AVI Video (*.avi)"
         )
         if path:
             self.out_path.setText(path)
@@ -247,6 +172,7 @@ class ExportDialog(QDialog):
             'height': h,
             'fps': fps,
             'quality': self.quality.currentIndex(),
+            'codec': ['h264', 'h265', 'prores', 'vp9', 'mpeg4'][self.format_combo.currentIndex()],
         }
 
         self.export_btn.setEnabled(False)

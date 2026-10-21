@@ -551,6 +551,10 @@ class MediaPanel(QWidget):
         lbl.setObjectName("sectionTitle")
         layout.addWidget(lbl)
 
+        imp = QPushButton("Import PNG sticker…")
+        imp.clicked.connect(self._import_sticker)
+        layout.addWidget(imp)
+
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setStyleSheet("QScrollArea { border: none; }")
@@ -714,7 +718,13 @@ class MediaPanel(QWidget):
             card_layout.addWidget(lbl2)
 
             card.setStyleSheet("QWidget { background: #252525; border-radius: 6px; } QWidget:hover { background: #333; border: 1px solid #fe2c55; }")
+            card.setToolTip(f"Apply '{name}' at the start of the selected clip")
+            card.mousePressEvent = lambda ev, t=tid: self._apply_transition(t)
             grid.addWidget(card, i // 2, i % 2)
+
+        none_btn = QPushButton("Remove transition")
+        none_btn.clicked.connect(lambda: self._apply_transition(""))
+        layout.addWidget(none_btn)
 
         grid.setRowStretch(grid.rowCount(), 1)
         scroll.setWidget(container)
@@ -1010,18 +1020,26 @@ class MediaPanel(QWidget):
             card.set_selected(f_id == fid)
         self.filter_selected.emit(name, fid)
 
+    def _selected_clip(self):
+        getter = getattr(self.window(), '_get_selected_clip', None)
+        return getter() if getter else None
+
+    def _notify_clip_changed(self, clip):
+        cb = getattr(self.window(), '_on_clip_property_changed', None)
+        if cb:
+            cb(clip.id)
+
     def _apply_beauty(self, attr: str, value: int):
-        parent = self.window()
-        selected_clip = getattr(parent, '_selected_clip', None)
-        if selected_clip and hasattr(selected_clip, attr):
-            setattr(selected_clip, attr, value / 100.0)
+        clip = self._selected_clip()
+        if clip and hasattr(clip, attr):
+            setattr(clip, attr, value / 100.0)
+            self._notify_clip_changed(clip)
 
     def _apply_lut(self, idx: int):
-        lut_id = self.lut_combo.itemData(idx)
-        parent = self.window()
-        selected_clip = getattr(parent, '_selected_clip', None)
-        if selected_clip:
-            selected_clip.lut_id = lut_id if lut_id else None
+        clip = self._selected_clip()
+        if clip:
+            clip.lut_id = self.lut_combo.itemData(idx) or ""
+            self._notify_clip_changed(clip)
 
     def _add_text(self, preset: str):
         from src.ui.text_dialog import TextDialog
@@ -1035,18 +1053,52 @@ class MediaPanel(QWidget):
                 if hasattr(parent, '_refresh_timeline'):
                     parent._refresh_timeline()
 
+    def _apply_transition(self, tid: str):
+        clip = self._selected_clip()
+        if not clip:
+            return
+        clip.transition_in = tid
+        clip.transition_in_duration = self.trans_duration.value() * 100
+        self._notify_clip_changed(clip)
+
+    @staticmethod
+    def _emoji_png(emoji: str) -> str:
+        """Render an emoji to a transparent PNG (cached in %TEMP%/videocut_stickers)."""
+        import os, tempfile
+        from PyQt6.QtGui import QImage, QPainter, QFont, QColor
+        d = os.path.join(tempfile.gettempdir(), 'videocut_stickers')
+        os.makedirs(d, exist_ok=True)
+        path = os.path.join(d, '-'.join(f'{ord(c):x}' for c in emoji) + '.png')
+        if not os.path.exists(path):
+            img = QImage(256, 256, QImage.Format.Format_ARGB32)
+            img.fill(QColor(0, 0, 0, 0))
+            p = QPainter(img)
+            f = QFont('Segoe UI Emoji')
+            f.setPixelSize(200)
+            p.setFont(f)
+            p.drawText(img.rect(), Qt.AlignmentFlag.AlignCenter, emoji)
+            p.end()
+            img.save(path)
+        return path
+
     def _add_sticker(self, emoji: str):
-        from src.core.project import Clip, ClipType, TextStyle
+        self._add_sticker_file(self._emoji_png(emoji))
+
+    def _import_sticker(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Import PNG Sticker", "", "Images (*.png *.webp *.jpg *.jpeg)")
+        if path:
+            self._add_sticker_file(path)
+
+    def _add_sticker_file(self, path: str):
+        from src.core.project import Clip, ClipType
         parent = self.window()
         if hasattr(parent, 'project'):
             start = parent.project.settings.duration
             clip = Clip(
-                clip_type=ClipType.TEXT,
-                text_content=emoji,
-                track=1,
-                timeline_start=start,
-                timeline_end=start + 3000,
-                text_style=TextStyle(font_size=72, color="#ffffff"),
+                clip_type=ClipType.STICKER, source_path=path, track=1,
+                timeline_start=start, timeline_end=start + 3000,
+                source_start=0, source_end=3000,
             )
             parent.project.add_clip(clip)
             if hasattr(parent, '_refresh_timeline'):

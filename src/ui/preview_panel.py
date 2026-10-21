@@ -57,7 +57,8 @@ class VideoCanvas(QLabel):
             for text_info in self._text_overlays:
                 self._draw_text_overlay(painter, text_info, x, y, pw, ph)
 
-    def _draw_text_overlay(self, painter, info, off_x, off_y, pw, ph):
+    @staticmethod
+    def _draw_text_overlay(painter, info, off_x, off_y, pw, ph):
         content = info.get('content', '')
         style = info.get('style', {})
         pos_x = info.get('pos_x', 0.5)
@@ -278,60 +279,13 @@ class PreviewPanel(QWidget):
             self.canvas.set_frame(QPixmap(render_w, render_h))
             return
 
-        # Render main track
-        main_clips = [c for c in clips if c.track == 0]
-        base_frame = None
-
-        for clip in main_clips:
-            frame = self._get_clip_frame(clip, time_ms)
-            if frame is not None:
-                # Apply transforms
-                frame = FrameProcessor.apply_flip(frame, clip.flip_h, clip.flip_v)
-                frame = FrameProcessor.apply_crop(frame, clip.crop_left, clip.crop_right,
-                                                   clip.crop_top, clip.crop_bottom)
-                frame = FrameProcessor.apply_filter(frame, clip.filter_id, clip.filter_intensity)
-                frame = FrameProcessor.apply_color_correction(frame, clip)
-                base_frame = frame
-                break  # Main track: one clip at a time
-
-        # Composite overlay clips
-        overlay_clips = [c for c in clips if c.track > 0 and c.clip_type != ClipType.TEXT]
-        for ov_clip in overlay_clips:
-            ov_frame = self._get_clip_frame(ov_clip, time_ms)
-            if ov_frame is not None and base_frame is not None:
-                ov_frame = FrameProcessor.apply_color_correction(ov_frame, ov_clip)
-                # Simple overlay (center)
-                oh, ow = ov_frame.shape[:2]
-                bh, bw = base_frame.shape[:2]
-                ov_resized = __import__('cv2').resize(ov_frame, (min(ow, bw // 2), min(oh, bh // 2)))
-                oh2, ow2 = ov_resized.shape[:2]
-                y1 = (bh - oh2) // 2
-                x1 = (bw - ow2) // 2
-                alpha = ov_clip.opacity
-                base_frame[y1:y1+oh2, x1:x1+ow2] = (
-                    base_frame[y1:y1+oh2, x1:x1+ow2] * (1 - alpha) +
-                    ov_resized * alpha
-                ).astype(base_frame.dtype)
-
-        # Collect text overlays
-        text_clips = [c for c in clips if c.clip_type == ClipType.TEXT]
-        text_infos = []
-        for tc in text_clips:
-            text_infos.append({
-                'content': tc.text_content,
-                'pos_x': tc.position_x,
-                'pos_y': tc.position_y,
-                'style': {
-                    'font_family': tc.text_style.font_family,
-                    'font_size': tc.text_style.font_size,
-                    'bold': tc.text_style.bold,
-                    'italic': tc.text_style.italic,
-                    'color': tc.text_style.color,
-                    'stroke_color': tc.text_style.stroke_color,
-                    'stroke_width': tc.text_style.stroke_width,
-                    'shadow': tc.text_style.shadow,
-                }
-            })
+        from src.core.renderer import compose_frame, text_infos_at
+        base_frame = compose_frame(self.project, time_ms, self._get_clip_frame,
+                                   size=(render_w - render_w % 2 or 2, render_h - render_h % 2 or 2))
+        text_infos = text_infos_at(self.project, time_ms)
+        if base_frame is None:
+            self.canvas.set_frame(QPixmap(render_w, render_h), text_infos)
+            return
 
         pixmap = frame_to_pixmap(base_frame, render_w, render_h)
         self.canvas.set_frame(pixmap, text_infos)
@@ -346,6 +300,11 @@ class PreviewPanel(QWidget):
             reader = self._readers[path]
             return reader.read_frame()
 
+        elif clip.clip_type == ClipType.STICKER:
+            if path not in self._readers:
+                self._readers[path] = ImageReader(path)
+            return self._readers[path].read_frame()
+
         elif clip.clip_type == ClipType.VIDEO:
             if path not in self._readers:
                 reader = VideoReader(path)
@@ -356,10 +315,8 @@ class PreviewPanel(QWidget):
 
             reader = self._readers.get(path)
             if reader:
-                # Compute source time
-                ratio = (time_ms - clip.timeline_start) / max(1, clip.duration)
-                src_time = clip.source_start + int(ratio * (clip.source_end - clip.source_start))
-                src_time = int(src_time / clip.speed)
+                from src.core.renderer import source_time
+                src_time = source_time(clip, time_ms)
                 return reader.read_frame(src_time)
 
         return None

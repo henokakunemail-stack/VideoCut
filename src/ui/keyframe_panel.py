@@ -261,6 +261,7 @@ class KeyframePanel(QWidget):
         if self._clip_id:
             self._animator.clear_clip(self._clip_id)
             self._refresh_kf_list()
+            self.keyframe_removed.emit(self._clip_id, -1.0)
 
     def _refresh_kf_list(self):
         self._kf_list.clear()

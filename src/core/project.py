@@ -136,7 +136,11 @@ class Clip:
     chroma_key_value: float = 100.0
     chroma_key_tolerance: float = 30.0
 
-    # Keyframes — list of {time_ms, property, value}
+    # AI background removal / replacement
+    remove_background: bool = False
+    background_path: str = ""
+
+    # Keyframes — list of {time (s, within clip), props {name: value}, easing}
     keyframes: List[Dict[str, Any]] = field(default_factory=list)
 
     @property
