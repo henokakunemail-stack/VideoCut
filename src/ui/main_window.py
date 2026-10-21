@@ -164,6 +164,10 @@ class MainWindow(QMainWindow):
         preview_full = QAction("Preview Fullscreen", self)
         preview_full.setShortcut(QKeySequence("F11"))
         view_menu.addAction(preview_full)
+        scopes_act = QAction("Video Scopes", self)
+        scopes_act.setShortcut(QKeySequence("Ctrl+Shift+S"))
+        scopes_act.triggered.connect(self._show_scopes)
+        view_menu.addAction(scopes_act)
 
         # AI Tools menu
         ai_menu = menubar.addMenu("✨ AI Tools")
@@ -538,6 +542,15 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Voice Changer",
                 f"Could not load audio FX module:\n{e}\n\n"
                 "Make sure scipy is installed:\n  pip install scipy")
+
+    def _show_scopes(self):
+        from src.ui.scopes_panel import ScopesDialog
+        if getattr(self, '_scopes', None) is None:
+            self._scopes = ScopesDialog(self)
+            self.preview_panel.frame_rendered.connect(self._scopes.update_frame)
+        self._scopes.show()
+        self._scopes.raise_()
+        self.preview_panel.seek_to(self.preview_panel.current_time)
 
     def _open_ken_burns(self):
         """Apply Ken Burns (slow zoom/pan) effect to selected clip."""

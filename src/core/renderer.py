@@ -10,6 +10,7 @@ import cv2
 import numpy as np
 from src.core.video_player import FrameProcessor as FP
 from src.core.transitions import transition_frame
+from src.core import grading
 
 
 def _fx_ken_burns(f, p, progress):
@@ -152,13 +153,14 @@ def _layer(clip, frame, time_ms, extra=None):
     frame = FP.apply_filter(frame, clip.filter_id, clip.filter_intensity)
 
     if clip.lut_id:
-        graded = FP.apply_lut(frame, clip.lut_id)
+        graded = grading.apply_named_lut(frame, clip.lut_id)
         s = max(0.0, min(1.0, clip.lut_strength))
         frame = graded if s >= 1.0 else cv2.addWeighted(frame, 1 - s, graded, s, 0)
 
     cc = copy.copy(clip)
     cc.opacity = 1.0  # opacity is alpha here, not darkening
     frame = FP.apply_color_correction(frame, cc)
+    frame = grading.apply_grading(frame, clip)
 
     for e in clip.effects:
         fn = EFFECTS.get(e.effect_id)

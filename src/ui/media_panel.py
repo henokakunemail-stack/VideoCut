@@ -127,6 +127,12 @@ LUT_LIST = [
     ("Day for Night", "day_for_night"),
     ("Teal & Orange", "teal_orange"),
     ("Blockbuster", "blockbuster"),
+    ("Cinematic Cool", "cinematic_cool"),
+    ("Warm Film", "warm_film"),
+    ("Faded", "faded"),
+    ("Cyberpunk", "cyberpunk"),
+    ("Mono Noir", "mono_noir"),
+    ("Vivid", "vivid"),
 ]
 
 MASK_LIST = [
@@ -826,31 +832,9 @@ class MediaPanel(QWidget):
         lut_lay.addLayout(lut_intensity_row)
         layout.addWidget(lut_grp)
 
-        # HSL section
-        hsl_grp = QGroupBox("HSL Color Wheel")
-        hsl_grp.setStyleSheet("QGroupBox { color: #aaa; border: 1px solid #333; border-radius: 6px; margin-top: 8px; padding-top: 6px; }")
-        hsl_lay = QVBoxLayout(hsl_grp)
-
-        colors = ["Red", "Orange", "Yellow", "Green", "Cyan", "Blue", "Purple", "Pink"]
-        for c in colors:
-            row = QHBoxLayout()
-            lbl = QLabel(c)
-            lbl.setFixedWidth(55)
-            lbl.setStyleSheet("color: #aaa; font-size: 10px; background: transparent;")
-            row.addWidget(lbl)
-
-            for prop in ["H", "S", "L"]:
-                sl = QSlider(Qt.Orientation.Horizontal)
-                sl.setRange(-100, 100)
-                sl.setValue(0)
-                sl.setFixedWidth(45)
-                row.addWidget(sl)
-                mini_lbl = QLabel(prop)
-                mini_lbl.setStyleSheet("color: #666; font-size: 9px; background: transparent;")
-                row.addWidget(mini_lbl)
-
-            hsl_lay.addLayout(row)
-        layout.addWidget(hsl_grp)
+        hint = QLabel("Wheels, HSL & curves: Properties > Grade")
+        hint.setStyleSheet("color: #888; font-size: 10px; background: transparent;")
+        layout.addWidget(hint)
 
         # Mask section
         mask_grp = QGroupBox("Shape Mask")

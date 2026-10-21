@@ -127,6 +127,7 @@ class PreviewPanel(QWidget):
     play_toggled = pyqtSignal(bool)
     seek_requested = pyqtSignal(int)
     time_changed = pyqtSignal(int)
+    frame_rendered = pyqtSignal(object)   # RGB uint8 ndarray of the composed frame
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -287,6 +288,7 @@ class PreviewPanel(QWidget):
             self.canvas.set_frame(QPixmap(render_w, render_h), text_infos)
             return
 
+        self.frame_rendered.emit(base_frame)
         pixmap = frame_to_pixmap(base_frame, render_w, render_h)
         self.canvas.set_frame(pixmap, text_infos)
 

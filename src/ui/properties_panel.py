@@ -586,6 +586,16 @@ class PropertiesPanel(QWidget):
 
         # Grade / LUT
         lut_id = getattr(clip, 'lut_id', '')
+        if lut_id.startswith('cube:') and self.lut_combo.findData(lut_id) < 0:
+            import os
+            self.lut_combo.addItem(os.path.basename(lut_id[5:]), lut_id)
+        for k, wh in self.wheels.items():
+            wh.set_value(clip.color_wheels.get(k))
+        for band, row in self.hsl_rows.items():
+            vals = (list(clip.hsl.get(band) or []) + [0, 0, 0])[:3]
+            for i, sl in row.items():
+                sl.set_value(vals[i])
+        self.curve_editor.set_curves(clip.curves)
         for i in range(self.lut_combo.count()):
             if self.lut_combo.itemData(i) == lut_id:
                 self.lut_combo.setCurrentIndex(i)
@@ -696,6 +706,12 @@ class PropertiesPanel(QWidget):
             ("Day for Night", "day_for_night"),
             ("Teal & Orange", "teal_orange"),
             ("Blockbuster", "blockbuster"),
+            ("Cinematic Cool", "cinematic_cool"),
+            ("Warm Film", "warm_film"),
+            ("Faded", "faded"),
+            ("Cyberpunk", "cyberpunk"),
+            ("Mono Noir", "mono_noir"),
+            ("Vivid", "vivid"),
         ]
         for name, lid in lut_options:
             self.lut_combo.addItem(name, lid)
@@ -703,9 +719,47 @@ class PropertiesPanel(QWidget):
         self.lut_combo.currentIndexChanged.connect(self._on_lut_changed)
         layout.addWidget(self.lut_combo)
 
+        imp = QPushButton("Import .cube LUT…")
+        imp.clicked.connect(self._import_cube)
+        layout.addWidget(imp)
+
         self.lut_strength = SliderRow("Strength", 0.0, 1.0, 1.0, 1.0)
         self.lut_strength.value_changed.connect(lambda v: self._set_clip_attr("lut_strength", v))
         layout.addWidget(self.lut_strength)
+
+        from src.ui.grading_widgets import ColorWheel, CurveEditor
+        from src.core.grading import BANDS
+        wl = QLabel("COLOR WHEELS  (double-click = reset)")
+        wl.setObjectName("sectionTitle")
+        layout.addWidget(wl)
+        wrow = QHBoxLayout()
+        self.wheels = {}
+        for key, title, k in (("lift", "Lift", 0.3), ("gamma", "Gamma", 0.5), ("gain", "Gain", 0.5)):
+            wh = ColorWheel(title, k)
+            wh.changed.connect(lambda v, key=key: self._on_wheel(key, v))
+            self.wheels[key] = wh
+            wrow.addWidget(wh)
+        layout.addLayout(wrow)
+
+        hl = QLabel("HSL")
+        hl.setObjectName("sectionTitle")
+        layout.addWidget(hl)
+        self.hsl_rows = {}
+        for band in BANDS:
+            row = {}
+            for i, nm in enumerate(("H", "S", "L")):
+                sl = SliderRow(f"{band.title()} {nm}", -100.0, 100.0, 0.0, 200.0)
+                sl.value_changed.connect(lambda v, b=band, i=i: self._on_hsl(b, i, v))
+                layout.addWidget(sl)
+                row[i] = sl
+            self.hsl_rows[band] = row
+
+        cl = QLabel("CURVES  (click add, right-click delete)")
+        cl.setObjectName("sectionTitle")
+        layout.addWidget(cl)
+        self.curve_editor = CurveEditor()
+        self.curve_editor.changed.connect(self._on_curves)
+        layout.addWidget(self.curve_editor)
 
         mask_label = QLabel("SHAPE MASK")
         mask_label.setObjectName("sectionTitle")
@@ -783,6 +837,49 @@ class PropertiesPanel(QWidget):
         if self._updating or not self.clip:
             return
         self.clip.lut_id = self.lut_combo.itemData(idx) or ""
+        self.clip_changed.emit(self.clip.id)
+
+    def _import_cube(self):
+        from PyQt6.QtWidgets import QFileDialog, QMessageBox
+        from src.core.grading import load_cube
+        if not self.clip:
+            return
+        path, _ = QFileDialog.getOpenFileName(self, "Import LUT", "", "3D LUT (*.cube)")
+        if not path:
+            return
+        try:
+            load_cube(path)
+        except (OSError, ValueError) as e:
+            QMessageBox.warning(self, "Import LUT", f"Invalid .cube file: {e}")
+            return
+        lid = "cube:" + path
+        if self.lut_combo.findData(lid) < 0:
+            import os
+            self.lut_combo.addItem(os.path.basename(path), lid)
+        self.lut_combo.setCurrentIndex(self.lut_combo.findData(lid))  # fires _on_lut_changed
+
+    def _on_wheel(self, key: str, v):
+        if self._updating or not self.clip:
+            return
+        wheels = dict(self.clip.color_wheels)
+        wheels[key] = [round(x, 4) for x in v]
+        self.clip.color_wheels = wheels
+        self.clip_changed.emit(self.clip.id)
+
+    def _on_hsl(self, band: str, i: int, v: float):
+        if self._updating or not self.clip:
+            return
+        hsl = dict(self.clip.hsl)
+        cur = list(hsl.get(band) or [0.0, 0.0, 0.0])
+        cur[i] = v
+        hsl[band] = cur
+        self.clip.hsl = hsl
+        self.clip_changed.emit(self.clip.id)
+
+    def _on_curves(self, curves: dict):
+        if self._updating or not self.clip:
+            return
+        self.clip.curves = curves
         self.clip_changed.emit(self.clip.id)
 
     def _on_mask_changed(self, idx: int):

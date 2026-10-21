@@ -128,6 +128,11 @@ class Clip:
     # Color Grading
     lut_id: str = ""             # bleach_bypass, day_for_night, teal_orange, blockbuster
     lut_strength: float = 1.0
+    # Pro grading (see core/grading.py). wheels: {lift|gamma|gain: [r,g,b,master]},
+    # hsl: {band: [hue,sat,lum]}, curves: {master|r|g|b: [[x,y],...]}
+    color_wheels: Dict[str, List[float]] = field(default_factory=dict)
+    hsl: Dict[str, List[float]] = field(default_factory=dict)
+    curves: Dict[str, List[List[float]]] = field(default_factory=dict)
 
     # Chroma Key
     chroma_key_enabled: bool = False
