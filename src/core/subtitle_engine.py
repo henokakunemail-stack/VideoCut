@@ -11,6 +11,8 @@ import tempfile
 from dataclasses import dataclass, field
 from typing import List, Optional, Callable
 
+from src.core.exporter import ffmpeg_exe
+
 try:
     import whisper as _whisper
     _WHISPER_OK = True
@@ -139,7 +141,7 @@ class SubtitleEngine:
     @staticmethod
     def _extract_audio(media_path: str, output_wav: str) -> bool:
         cmd = [
-            "ffmpeg", "-y", "-i", media_path,
+            ffmpeg_exe(), "-y", "-i", media_path,
             "-vn", "-acodec", "pcm_s16le",
             "-ar", "16000", "-ac", "1",
             output_wav
@@ -204,7 +206,7 @@ class SubtitleEngine:
                 f"Outline=2,MarginV={margin}"
             )
             cmd = [
-                "ffmpeg", "-y", "-i", video_path,
+                ffmpeg_exe(), "-y", "-i", video_path,
                 "-vf", f"subtitles={srt_path}:force_style='{style}'",
                 "-c:a", "copy",
                 output_path

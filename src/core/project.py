@@ -154,6 +154,14 @@ class Clip:
     # Keyframes — list of {time (s, within clip), props {name: value}, easing}
     keyframes: List[Dict[str, Any]] = field(default_factory=list)
 
+    # AI (src/ai): per-feature sub-dicts bake/matte/reframe/relight/vocal; files live in the project assets dir
+    ai: Dict[str, Any] = field(default_factory=dict)
+    audio_source: str = ""                 # replaces source_path as the audio input (stems, enhanced)
+    audio_fx: List[Dict[str, Any]] = field(default_factory=list)   # [{name, params}] voice FX chain
+    audio_enhance: str = ""                # '' | low | medium | high
+    text_words: List[Dict[str, Any]] = field(default_factory=list)  # [{w, s, e}] word timing (ms)
+    text_anim: str = ""
+
     @property
     def duration(self):
         return self.timeline_end - self.timeline_start
@@ -170,7 +178,8 @@ class Clip:
             data['text_style'] = TextStyle(**data['text_style'])
         if 'effects' in data:
             data['effects'] = [ClipEffect(**e) for e in data['effects']]
-        return cls(**data)
+        known = cls.__dataclass_fields__    # files from newer builds may carry unknown keys
+        return cls(**{k: v for k, v in data.items() if k in known})
 
 
 @dataclass
@@ -383,6 +392,9 @@ class Project:
         return proj
 
     def save(self, path: str):
+        if self.path != path and any(c.ai or c.audio_source for c in self.clips):
+            from src.ai.assets import relocate    # Save As: bring baked files along
+            relocate(self, path)
         self.path = path
         with open(path, 'w', encoding='utf-8') as f:
             json.dump(self.to_dict(), f, indent=2)

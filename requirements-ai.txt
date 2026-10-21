@@ -1,0 +1,5 @@
+# Optional AI features. Model weights are NOT pip packages: run `python tools/fetch_models.py`.
+onnxruntime>=1.17        # upscale, RIFE, matting, depth (use onnxruntime-directml for GPU on Windows)
+faster-whisper>=1.0      # auto captions (CTranslate2, no torch)
+piper-tts>=1.2           # text to speech
+# Vocal separation (optional, large): pip install torch demucs

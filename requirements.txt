@@ -1,5 +1,6 @@
 # VideoCut v3 — Dependencies
 # Install: pip install -r requirements.txt
+# AI features (optional): pip install -r requirements-ai.txt
 
 # Core GUI
 PyQt6>=6.4.0
@@ -8,25 +9,5 @@ PyQt6>=6.4.0
 opencv-python>=4.7.0
 numpy>=1.24.0
 
-# AI Background Removal
-# (optional — falls back to OpenCV GrabCut if missing)
-rembg>=2.0.0
-
-# Auto Captions / Subtitles
-# (optional — requires ~145MB model download on first use)
-openai-whisper>=20231117
-
-# Beat Detection
-# (optional — falls back to energy-based detection if missing)
-librosa>=0.10.0
-
-# Audio DSP / Voice FX
-scipy>=1.10.0
-
-# Bundled ffmpeg binary (export + audio extraction; no system install needed)
+# Bundled ffmpeg binary (export, bakes, audio filters; no system install needed)
 imageio-ffmpeg>=0.4.9
-
-# Audio extraction helper (ffmpeg wrapper)
-# ffmpeg must also be installed on system:
-#   Windows: winget install ffmpeg  OR  choco install ffmpeg
-#   Or download from https://ffmpeg.org/download.html

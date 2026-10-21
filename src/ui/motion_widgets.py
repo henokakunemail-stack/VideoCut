@@ -161,39 +161,3 @@ class SpeedCurveEditor(QWidget):
         p.drawText(3, 11, "10x")
         p.drawText(3, self.H - 3, "0.1x")
         p.end()
-
-
-from PyQt6.QtCore import QObject, QThread
-
-
-class StabilizeWorker(QObject):
-    """Runs core.stabilize.analyze off the UI thread (own VideoCapture: not thread-safe to share)."""
-    progress = pyqtSignal(int)
-    finished = pyqtSignal(object)      # stabilize dict or None (cancelled/failed)
-
-    def __init__(self, path, start_ms, end_ms, level):
-        super().__init__()
-        self.args = (path, start_ms, end_ms, level)
-        self._cancel = False
-
-    def cancel(self):
-        self._cancel = True
-
-    def run(self):
-        try:
-            from src.core import stabilize
-            res = stabilize.analyze(*self.args, progress=self.progress.emit, cancelled=lambda: self._cancel)
-        except Exception:
-            res = None
-        self.finished.emit(res)
-
-
-def start_worker(worker: StabilizeWorker, parent):
-    """Move worker to a QThread owned by parent; returns the thread."""
-    th = QThread(parent)
-    worker.moveToThread(th)
-    th.started.connect(worker.run)
-    worker.finished.connect(th.quit)
-    th.finished.connect(th.deleteLater)
-    th.start()
-    return th

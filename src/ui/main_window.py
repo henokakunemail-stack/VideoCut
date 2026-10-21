@@ -496,105 +496,96 @@ class MainWindow(QMainWindow):
 
     # ---- AI Tools ----
 
-    def _open_auto_captions(self):
-        """Open auto-caption / subtitle dialog (Whisper)."""
-        try:
-            from src.ui.subtitle_dialog import SubtitleDialog
-            dlg = SubtitleDialog(self.project, self)
-            dlg.captions_ready.connect(self._on_captions_ready)
-            dlg.exec()
-        except ImportError as e:
-            QMessageBox.warning(self, "Auto Captions",
-                f"Could not load subtitle module:\n{e}\n\n"
-                "Make sure openai-whisper is installed:\n  pip install openai-whisper")
+    def _media_clip(self):
+        """Selected clip with media, else the first video clip."""
+        c = self._get_selected_clip()
+        if c and c.source_path:
+            return c
+        return next((c for c in self.project.clips if c.clip_type == ClipType.VIDEO), None)
 
-    def _on_captions_ready(self, clips):
-        """Add subtitle clips returned from SubtitleDialog to the timeline."""
+    def _open_auto_captions(self):
+        from src.ui.subtitle_dialog import SubtitleDialog
+        c = self._media_clip()
+        dlg = SubtitleDialog(c.source_path if c else "", self)
+        dlg.subtitles_applied.connect(lambda t: self._on_captions_ready(t, c))
+        dlg.exec()
+
+    def _on_captions_ready(self, track, src=None):
+        """One TEXT clip per subtitle, on track 1, offset to the source clip's timeline position."""
+        from src.core.project import TextStyle
+        off = (src.timeline_start - src.source_start) if src else 0
+        clips = [Clip(clip_type=ClipType.TEXT, text_content=s.text, text_style=TextStyle(),
+                      position_y=0.85, track=1,
+                      timeline_start=int(s.start * 1000) + off, timeline_end=int(s.end * 1000) + off)
+                 for s in track.subtitles]
         for clip in clips:
             self.project.add_clip(clip)
         self._refresh_timeline()
         self.status_bar.showMessage(f"Added {len(clips)} subtitle clip(s) to timeline")
 
     def _open_bg_removal(self):
-        """Open AI background removal panel."""
-        try:
-            from src.ui.background_panel import BackgroundPanel
-            # Show as a floating dock-style dialog
-            dlg = BackgroundPanel(self)
-            dlg.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.WindowStaysOnTopHint)
-            dlg.setWindowTitle("AI Background Removal")
-            dlg.resize(320, 480)
-            dlg.bg_remove_toggled.connect(self._on_bg_remove_toggled)
-            dlg.bg_replaced.connect(self._on_bg_replaced)
-            dlg.show()
-        except ImportError as e:
-            QMessageBox.warning(self, "Background Removal",
-                f"Could not load background module:\n{e}\n\n"
-                "Make sure rembg is installed:\n  pip install rembg")
+        from src.ui.background_panel import BackgroundPanel
+        dlg = BackgroundPanel(self)
+        dlg.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.WindowStaysOnTopHint)
+        dlg.setWindowTitle("AI Background Removal")
+        dlg.resize(320, 480)
+        dlg.bg_removal_requested.connect(self._on_bg_removal)
+        dlg.show()
+        self._bg_dlg = dlg
 
-    def _on_bg_remove_toggled(self, enabled: bool):
+    def _on_bg_removal(self, req: dict):
+        # ponytail: req['bg_color'/'feather'/'method'] ignored until the matting bake (4e)
         clip = self._get_selected_clip()
-        if clip:
-            clip.remove_background = enabled
+        if clip and clip.clip_type in (ClipType.VIDEO, ClipType.IMAGE):
+            clip.remove_background = True
+            clip.background_path = req.get("bg_video") or ""
             self._on_clip_property_changed(clip.id)
-
-    def _on_bg_replaced(self, bg_path: str):
-        clip = self._get_selected_clip()
-        if clip:
-            clip.background_path = bg_path
-            self._on_clip_property_changed(clip.id)
+        else:
+            self.status_bar.showMessage("Select a video or image clip first")
 
     def _open_beat_sync(self):
-        """Open beat sync dialog."""
-        try:
-            from src.core.beat_sync import BeatSyncEngine
-            # Find audio tracks
-            if not self.project.audio_tracks:
-                QMessageBox.information(self, "Beat Sync",
-                    "Add an audio/music track to the timeline first,\n"
-                    "then use Beat Sync to snap clips to the beat.")
-                return
-            audio_path = self.project.audio_tracks[0].source_path
-            engine = BeatSyncEngine()
-            self.status_bar.showMessage("Detecting beats…")
+        """Detect beats of the first audio track off-thread, then trim main-track cuts onto them."""
+        from src.core.beat_sync import BeatSyncEngine, snap_cuts
+        from src.ui.workers import Worker, start_worker
+        if not self.project.audio_tracks:
+            QMessageBox.information(self, "Beat Sync", "Add an audio/music track first.")
+            return
+        w = Worker(lambda path, progress, cancelled: BeatSyncEngine.detect_beats(path, progress_cb=lambda f: progress(int(f * 100))),
+                   self.project.audio_tracks[0].source_path)
+        self.status_bar.showMessage("Detecting beats…")
 
-            beats = engine.detect_beats(audio_path)
+        def done(beats):
             if not beats:
-                QMessageBox.information(self, "Beat Sync", "No beats detected in audio track.")
+                self.status_bar.showMessage("No beats detected")
                 return
-
-            bpm = engine.get_bpm(audio_path)
-            reply = QMessageBox.question(self, "Beat Sync",
-                f"Detected {len(beats)} beats at ~{bpm:.1f} BPM.\n\n"
-                "Sync main-track clips to beats?\n"
-                "(clips will be snapped to nearest beat boundary)",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-
-            if reply == QMessageBox.StandardButton.Yes:
-                synced = engine.sync_clips_to_beats(
-                    self.project.clips, beats, mode='snap')
-                for clip in synced:
-                    self.project.update_clip(clip)
+            bpm = BeatSyncEngine.get_bpm(beats)
+            if QMessageBox.question(self, "Beat Sync", f"{len(beats)} beats, ~{bpm:.0f} BPM.\n"
+                                    "Trim main-track clips so cuts land on beats?") == QMessageBox.StandardButton.Yes:
+                n = snap_cuts(self.project.get_main_track_clips(), [int(b * 1000) for b in beats])
+                self.project.is_modified = True
+                self.project._update_duration()
                 self._refresh_timeline()
-                self.status_bar.showMessage(f"Synced {len(synced)} clips to {len(beats)} beats")
-        except ImportError as e:
-            QMessageBox.warning(self, "Beat Sync",
-                f"Could not load beat sync module:\n{e}\n\n"
-                "Make sure librosa is installed:\n  pip install librosa")
+                self.status_bar.showMessage(f"Snapped {n} cut(s) to beats")
+        w.finished.connect(done)
+        w.error.connect(lambda m: self.status_bar.showMessage(f"Beat sync failed: {m}"))
+        self._beat_worker = w
+        self._beat_thread = start_worker(w, self)
 
     def _open_voice_fx(self):
-        """Open voice changer / audio FX dialog."""
-        try:
-            from src.ui.audio_fx_panel import AudioFxPanel
-            dlg = AudioFxPanel(self.project, self)
-            dlg.setWindowFlags(Qt.WindowType.Window)
-            dlg.setWindowTitle("Voice Changer & Audio FX")
-            dlg.resize(380, 560)
-            dlg.show()
-        except ImportError as e:
-            QMessageBox.warning(self, "Voice Changer",
-                f"Could not load audio FX module:\n{e}\n\n"
-                "Make sure scipy is installed:\n  pip install scipy")
+        from src.ui.audio_fx_panel import AudioFxPanel
+        dlg = AudioFxPanel(self)
+        dlg.setWindowFlags(Qt.WindowType.Window)
+        dlg.setWindowTitle("Voice Changer & Audio FX")
+        dlg.resize(380, 560)
+
+        def store(chain):    # DSP lands in 4c (audio_chain); the chain is stored on the clip now
+            c = self._get_selected_clip()
+            if c:
+                c.audio_fx = [{"name": n, "params": p} for n, p in chain]
+                self.project.is_modified = True
+        dlg.fx_chain_changed.connect(store)
+        dlg.show()
+        self._fx_dlg = dlg
 
     def _show_scopes(self):
         from src.ui.scopes_panel import ScopesDialog

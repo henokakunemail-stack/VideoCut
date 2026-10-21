@@ -10,6 +10,8 @@ import math
 from typing import List, Optional, Callable
 import numpy as np
 
+from src.core.exporter import ffmpeg_exe
+
 try:
     import librosa as _librosa
     _LIBROSA_OK = True
@@ -92,7 +94,7 @@ class BeatSyncEngine:
 
         try:
             cmd = [
-                "ffmpeg", "-y", "-i", audio_path,
+                ffmpeg_exe(), "-y", "-i", audio_path,
                 "-f", "s16le", "-acodec", "pcm_s16le",
                 "-ar", "22050", "-ac", "1", raw_path
             ]
@@ -181,7 +183,7 @@ class BeatSyncEngine:
         tf = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
         tf.close()
         cmd = [
-            "ffmpeg", "-y", "-i", video_path,
+            ffmpeg_exe(), "-y", "-i", video_path,
             "-vn", "-acodec", "pcm_s16le",
             "-ar", "22050", "-ac", "1", tf.name
         ]
@@ -194,3 +196,32 @@ class BeatSyncEngine:
             except Exception:
                 pass
             return None
+
+    @staticmethod
+    def get_bpm(beats: List[float]) -> float:
+        """Median-interval BPM from beat times (seconds)."""
+        if len(beats) < 2:
+            return 0.0
+        return 60.0 / float(np.median(np.diff(beats)))
+
+
+def snap_cuts(clips, beats_ms) -> int:
+    """Lay main-track clips back to back and trim each one's end to the nearest beat at or before it.
+    Returns number of trimmed cuts. ponytail: only constant-speed forward video/images are trimmed;
+    speed-curve/reverse/freeze clips keep their length. Last clip is never trimmed."""
+    if not clips or not beats_ms:
+        return 0
+    t, n = clips[0].timeline_start, 0
+    for i, c in enumerate(clips):
+        d = c.timeline_end - c.timeline_start
+        c.timeline_start, c.timeline_end = t, t + d
+        simple = not (c.speed_curve or c.reverse or c.freeze)
+        floor = [b for b in beats_ms if c.timeline_start + 200 <= b <= c.timeline_end]
+        if i < len(clips) - 1 and simple and floor and floor[-1] < c.timeline_end:
+            cut = c.timeline_end - floor[-1]
+            if c.source_end:
+                c.source_end -= int(round(cut * c.speed))
+            c.timeline_end = floor[-1]
+            n += 1
+        t = c.timeline_end
+    return n

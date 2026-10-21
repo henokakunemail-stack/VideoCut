@@ -39,9 +39,7 @@ hidden_imports = [
     'src.ui.text_dialog',
     'src.ui.export_dialog',
     # AI features
-    'src.core.ai_background',
     'src.ui.background_panel',
-    'src.core.auto_caption',
     'src.ui.subtitle_dialog',
     'src.core.beat_sync',
     'src.core.keyframe_engine',
@@ -49,15 +47,11 @@ hidden_imports = [
     'src.core.audio_fx',
     'src.ui.audio_fx_panel',
     'src.ui.effects_panel',
-    # Optional heavy AI libs (soft-imported)
-    'rembg',
-    'whisper',
-    'librosa',
-    'scipy',
-    'scipy.fft',
-    'scipy.signal',
-    'scipy.io',
-    'scipy.io.wavfile',
+    # AI (src/ai): heavy libs are imported lazily
+    'src.ai.models', 'src.ai.runtime', 'src.ai.assets', 'src.ai.bake', 'src.ai.media',
+    'src.ui.workers',
+    'onnxruntime',
+    'faster_whisper',
 ]
 
 a = Analysis(
@@ -66,7 +60,7 @@ a = Analysis(
     binaries=[],
     datas=[
         ('assets', 'assets'),
-    ],
+    ] + ([('models', 'models')] if os.path.isdir('models') else []),   # run tools/fetch_models.py first
     hiddenimports=hidden_imports,
     hookspath=[],
     hooksconfig={

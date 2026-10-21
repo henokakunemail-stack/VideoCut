@@ -432,7 +432,8 @@ class PropertiesPanel(QWidget):
 
     def _stab_start(self):
         """Analyze button doubles as Cancel while running."""
-        from src.ui.motion_widgets import StabilizeWorker, start_worker
+        from src.core import stabilize
+        from src.ui.workers import Worker, start_worker
         if self._stab_worker:
             self._stab_worker.cancel()
             return
@@ -440,7 +441,7 @@ class PropertiesPanel(QWidget):
         if not c or c.clip_type != ClipType.VIDEO or c.freeze:
             return
         self._stab_clip = c
-        self._stab_worker = StabilizeWorker(c.source_path, c.source_start, c.source_end, self.stab_level.currentData())
+        self._stab_worker = Worker(stabilize.analyze, c.source_path, c.source_start, c.source_end, self.stab_level.currentData())
         self._stab_worker.progress.connect(self.stab_bar.setValue)
         self._stab_worker.finished.connect(self._stab_done)
         self.stab_bar.setValue(0)
