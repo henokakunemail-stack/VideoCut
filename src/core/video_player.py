@@ -5,6 +5,7 @@ Video Player Core - handles video playback using OpenCV + PyQt6
 import cv2
 import numpy as np
 import os
+from collections import OrderedDict
 from PyQt6.QtCore import QTimer, pyqtSignal, QObject, Qt, QThread
 from PyQt6.QtGui import QImage, QPixmap
 
@@ -20,6 +21,8 @@ class VideoReader:
         self.width = 0
         self.height = 0
         self.duration_ms = 0
+        self._lru = OrderedDict()
+        self._pos = -1   # frame index the capture will read next
         self._open()
 
     def _open(self):
@@ -31,16 +34,34 @@ class VideoReader:
             self.height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
             self.duration_ms = int((self.total_frames / self.fps) * 1000)
 
-    def read_frame(self, time_ms: int) -> np.ndarray:
+    def frame_index(self, time_ms: float) -> int:
+        return max(0, min(int((time_ms / 1000.0) * self.fps + 1e-6), self.total_frames - 1))
+
+    def read_index(self, n: int) -> np.ndarray:
+        """RGB frame n. Small LRU; reads sequentially (no seek) when n follows the last read."""
         if not self.cap or not self.cap.isOpened():
             return None
-        frame_num = int((time_ms / 1000.0) * self.fps)
-        frame_num = max(0, min(frame_num, self.total_frames - 1))
-        self.cap.set(cv2.CAP_PROP_POS_FRAMES, frame_num)
+        n = max(0, min(n, self.total_frames - 1))
+        hit = self._lru.get(n)
+        if hit is not None:
+            self._lru.move_to_end(n)
+            return hit
+        if n != self._pos:
+            self.cap.set(cv2.CAP_PROP_POS_FRAMES, n)
         ret, frame = self.cap.read()
-        if ret:
-            return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        return None
+        if not ret:
+            self._pos = -1
+            return None
+        self._pos = n + 1
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        self._lru[n] = rgb
+        if len(self._lru) > 8:
+            self._lru.popitem(last=False)
+        return rgb
+
+    def read_frame(self, time_ms: float) -> np.ndarray:
+        f = self.read_index(self.frame_index(time_ms))
+        return None if f is None else f.copy()
 
     def read_thumbnail(self, size=(160, 90)) -> np.ndarray:
         frame = self.read_frame(self.duration_ms // 2)

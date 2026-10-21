@@ -87,6 +87,12 @@ class Clip:
     # Speed
     speed: float = 1.0
     reverse: bool = False
+    # Speed curve [[u, speed], ...] over playback progress u in 0..1; empty = constant `speed`
+    # (see core/timemap.py). freeze = hold source_start for the whole clip.
+    speed_curve: List[List[float]] = field(default_factory=list)
+    freeze: bool = False
+    frame_mode: str = "none"      # slow-mo interpolation: none | blend | optical_flow
+    stabilize: Dict[str, Any] = field(default_factory=dict)   # core/stabilize.py result
 
     # Filter
     filter_id: str = ""
@@ -256,31 +262,92 @@ class Project:
         return [c for c in self.clips if c.clip_type == ClipType.TEXT]
 
     def split_clip(self, clip_id: str, split_time_ms: int) -> Optional[Clip]:
-        """Split a clip at a given timeline time, returns the new second half clip."""
+        """Split a clip at a given timeline time, returns the new second half clip.
+        Honours speed, speed curve, reverse and freeze so playback is continuous across the cut."""
+        import copy
+        from src.core import timemap
         clip = self.get_clip(clip_id)
         if not clip:
             return None
         if split_time_ms <= clip.timeline_start or split_time_ms >= clip.timeline_end:
             return None
 
-        # Calculate source time proportionally
-        ratio = (split_time_ms - clip.timeline_start) / clip.duration
-        source_split = int(clip.source_start + ratio * (clip.source_end - clip.source_start))
-
-        # Create second half
-        import copy
         new_clip = copy.deepcopy(clip)
         new_clip.id = str(uuid.uuid4())
+        if timemap.is_timed(clip) and not clip.freeze:
+            u = timemap.progress_at(clip, split_time_ms)
+            L = clip.source_end - clip.source_start
+            cut = int(round(clip.source_end - u * L)) if clip.reverse else int(round(clip.source_start + u * L))
+            if clip.reverse:   # playback runs from source_end down to source_start
+                new_clip.source_end, clip.source_start = cut, cut
+            else:
+                new_clip.source_start, clip.source_end = cut, cut
+            if clip.speed_curve:
+                curve = clip.speed_curve
+                clip.speed_curve = timemap.crop_curve(curve, 0.0, u)
+                new_clip.speed_curve = timemap.crop_curve(curve, u, 1.0)
+        elif not clip.freeze:
+            ratio = (split_time_ms - clip.timeline_start) / clip.duration
+            cut = int(clip.source_start + ratio * (clip.source_end - clip.source_start))
+            new_clip.source_start, clip.source_end = cut, cut
         new_clip.timeline_start = split_time_ms
-        new_clip.source_start = source_split
-
-        # Trim first half
         clip.timeline_end = split_time_ms
-        clip.source_end = source_split
+        new_clip.transition_in = ""
+        clip.transition_out = ""
 
         self.clips.append(new_clip)
         self.is_modified = True
         return new_clip
+
+    def retime_clip(self, clip_id: str, ripple: bool = True) -> int:
+        """Re-derive timeline_end from speed/curve/reverse; ripple later clips on the same track.
+        Returns the change in duration (ms)."""
+        from src.core import timemap
+        clip = self.get_clip(clip_id)
+        if not clip or not timemap.is_timed(clip) or clip.freeze:
+            return 0
+        old_end = clip.timeline_end
+        clip.timeline_end = clip.timeline_start + timemap.duration_ms(clip)
+        delta = clip.timeline_end - old_end
+        if ripple and delta:
+            for c in self.clips:
+                if c is not clip and c.track == clip.track and c.timeline_start >= old_end:
+                    c.timeline_start += delta
+                    c.timeline_end += delta
+        self.is_modified = True
+        self._update_duration()
+        return delta
+
+    def freeze_frame(self, clip_id: str, time_ms: int, duration_ms: int = 2000) -> Optional[Clip]:
+        """Insert a still of the frame shown at time_ms (splits the clip there), rippling the rest."""
+        import copy
+        from src.core import timemap
+        clip = self.get_clip(clip_id)
+        if not clip or not timemap.is_timed(clip) or clip.clip_type != ClipType.VIDEO:
+            return None
+        if not (clip.timeline_start < time_ms < clip.timeline_end):
+            return None
+        src = int(round(timemap.source_ms(clip, time_ms)))
+        right = self.split_clip(clip_id, time_ms)
+        if right is None:
+            return None
+        for c in self.clips:
+            if c.track == clip.track and c.timeline_start >= time_ms:
+                c.timeline_start += duration_ms
+                c.timeline_end += duration_ms
+        fz = copy.deepcopy(clip)
+        fz.id = str(uuid.uuid4())
+        fz.timeline_start, fz.timeline_end = time_ms, time_ms + duration_ms
+        fz.source_start = fz.source_end = src
+        fz.freeze, fz.reverse, fz.speed, fz.speed_curve = True, False, 1.0, []
+        fz.muted = True
+        fz.keyframes, fz.stabilize = [], {}
+        fz.transition_in = fz.transition_out = ""
+        fz.fade_in = fz.fade_out = 0.0
+        self.clips.append(fz)
+        self.is_modified = True
+        self._update_duration()
+        return fz
 
     def reorder_clips(self, track: int = 0):
         """Sort main track clips by timeline_start."""
@@ -307,6 +374,10 @@ class Project:
             proj.settings = ProjectSettings(**data['settings'])
         if 'clips' in data:
             proj.clips = [Clip.from_dict(c) for c in data['clips']]
+            for c in proj.clips:   # older files: timeline length ignored speed
+                if c.speed != 1.0 or c.speed_curve:
+                    proj.retime_clip(c.id, ripple=False)
+            proj.is_modified = False
         if 'audio_tracks' in data:
             proj.audio_tracks = [AudioTrack(**t) for t in data['audio_tracks']]
         return proj

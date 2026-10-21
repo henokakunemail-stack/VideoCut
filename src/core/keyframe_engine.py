@@ -79,8 +79,33 @@ class KeyframeTrack:
         return track
 
 
+def _bezier(t: float, x1: float, y1: float, x2: float, y2: float) -> float:
+    """CSS-style cubic-bezier easing; y may leave 0..1 (overshoot)."""
+    x1, x2 = max(0.0, min(1.0, x1)), max(0.0, min(1.0, x2))
+    bx = lambda s: 3 * (1 - s) ** 2 * s * x1 + 3 * (1 - s) * s * s * x2 + s ** 3
+    dbx = lambda s: 3 * (1 - s) ** 2 * x1 + 6 * (1 - s) * s * (x2 - x1) + 3 * s * s * (1 - x2)
+    s = t
+    for _ in range(8):                       # Newton
+        e = bx(s) - t
+        d = dbx(s)
+        if abs(e) < 1e-6 or abs(d) < 1e-6:
+            break
+        s -= e / d
+    if not (0.0 <= s <= 1.0) or abs(bx(s) - t) > 1e-4:   # bisection fallback
+        lo, hi = 0.0, 1.0
+        for _ in range(30):
+            s = (lo + hi) / 2
+            lo, hi = (s, hi) if bx(s) < t else (lo, s)
+    return 3 * (1 - s) ** 2 * s * y1 + 3 * (1 - s) * s * s * y2 + s ** 3
+
+
 def _ease(t: float, mode: str) -> float:
     t = max(0.0, min(1.0, t))
+    if mode.startswith("bezier:"):
+        try:
+            return _bezier(t, *[float(v) for v in mode[7:].split(",")])
+        except (TypeError, ValueError):
+            return t
     if mode == "linear":
         return t
     elif mode == "ease_in":

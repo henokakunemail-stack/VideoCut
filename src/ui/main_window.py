@@ -201,6 +201,13 @@ class MainWindow(QMainWindow):
         keyframe_act.triggered.connect(self._open_keyframes)
         ai_menu.addAction(keyframe_act)
 
+        stab_act = QAction("📐 Stabilize Clip...", self)
+        stab_act.triggered.connect(lambda: self._focus_motion_tab("Stabilize"))
+        ai_menu.addAction(stab_act)
+        slomo_act = QAction("🐢 Smooth Slow-mo...", self)
+        slomo_act.triggered.connect(lambda: self._focus_motion_tab("Smooth slow-mo"))
+        ai_menu.addAction(slomo_act)
+
         # Help
         help_menu = menubar.addMenu("Help")
         about_act = QAction("About VideoCut", self)
@@ -211,6 +218,7 @@ class MainWindow(QMainWindow):
         # Media panel -> timeline
         self.media_panel.media_added.connect(self._on_media_added)
         self.media_panel.filter_selected.connect(self._on_filter_selected)
+        self.media_panel.effect_applied.connect(self._on_effect_card)
 
         # Timeline -> preview
         self.timeline_panel.time_changed.connect(self._on_time_changed)
@@ -224,6 +232,10 @@ class MainWindow(QMainWindow):
 
         # Properties -> project update
         self.properties_panel.clip_changed.connect(self._on_clip_property_changed)
+        self.properties_panel.clip_timing_changed.connect(self._on_clip_timing_changed)
+        self.properties_panel.freeze_requested.connect(self._freeze_frame)
+        self.timeline_panel.freeze_requested.connect(self._freeze_frame)
+        self.timeline_panel.reverse_requested.connect(self._toggle_reverse)
         self.properties_panel.effect_params_changed.connect(self._on_effect_params_changed)
 
         # Toolbar
@@ -405,6 +417,19 @@ class MainWindow(QMainWindow):
         clip.filter_id = filter_id
         self._on_clip_property_changed(clip.id)
 
+    def _on_effect_card(self, name: str, card_id: str):
+        """Effect card click: toggle the effect on the selected clip."""
+        from src.core.renderer import CARD_EFFECTS, set_effect
+        clip = self._get_selected_clip()
+        if not clip:
+            self.status_bar.showMessage("Select a clip first")
+            return
+        eid, params = CARD_EFFECTS[card_id]
+        on = any(e.effect_id == eid for e in clip.effects)
+        set_effect(clip, eid, {**params, 'enabled': not on})
+        self.status_bar.showMessage(f"{name} {'removed' if on else 'applied'}")
+        self._on_clip_property_changed(clip.id)
+
     def _on_effect_params_changed(self, effect_id: str, params: dict):
         from src.core.renderer import set_effect
         clip = self._get_selected_clip()
@@ -420,6 +445,34 @@ class MainWindow(QMainWindow):
     def _on_clip_property_changed(self, clip_id: str):
         self.preview_panel.seek_to(self.current_time_ms)
         self.timeline_panel.update()
+
+    def _on_clip_timing_changed(self, clip_id: str):
+        self.project.retime_clip(clip_id)
+        self._refresh_timeline()
+
+    def _focus_motion_tab(self, what: str):
+        pp = self.properties_panel
+        if not self._get_selected_clip():
+            self.status_bar.showMessage("Select a video clip first")
+            return
+        for i in range(pp.tabs.count()):
+            if pp.tabs.tabText(i).startswith("Speed"):
+                pp.tabs.setCurrentIndex(i)
+        self.status_bar.showMessage(f"{what}: use the Speed tab")
+
+    def _freeze_frame(self, clip_id: str):
+        if self.project.freeze_frame(clip_id, self.current_time_ms):
+            self._refresh_timeline()
+            self.status_bar.showMessage("Freeze frame inserted")
+        else:
+            self.status_bar.showMessage("Move the playhead inside a video clip first")
+
+    def _toggle_reverse(self, clip_id: str):
+        clip = self.project.get_clip(clip_id)
+        if clip and clip.clip_type in (ClipType.VIDEO, ClipType.AUDIO) and not clip.freeze:
+            clip.reverse = not clip.reverse
+            self._refresh_timeline()
+            self.properties_panel.set_clip(clip)
 
     def _split_clip(self):
         sel = self.timeline_panel.selected_clip_id

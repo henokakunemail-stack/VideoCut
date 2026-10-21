@@ -126,6 +126,43 @@ class EffectsPanel(QWidget):
         rb_lay.addWidget(apply_rb)
         lay.addWidget(rb_grp)
 
+        # Camera Shake
+        from src.core.fx_motion import SHAKE_PRESETS
+        cs_grp = QGroupBox("Camera Shake")
+        cs_grp.setStyleSheet(mb_grp.styleSheet())
+        cs_lay = QVBoxLayout(cs_grp)
+        self._cs = {"amount": 40, "speed": 40}
+        self._cs_pulse = False
+        pre = QComboBox()
+        pre.addItems(["Custom"] + list(SHAKE_PRESETS))
+        pre.activated.connect(lambda _: self._cs_preset(pre.currentText(), sliders))
+        cs_lay.addWidget(pre)
+        sliders = {
+            "amount": _slider_row(cs_lay, "Amount", 0, 100, 40, lambda v: self._cs.__setitem__("amount", v), "%"),
+            "speed": _slider_row(cs_lay, "Speed", 0, 100, 40, lambda v: self._cs.__setitem__("speed", v), "%"),
+        }
+        apply_cs = QPushButton("Apply to Clip")
+        apply_cs.setFixedHeight(30)
+        apply_cs.setStyleSheet(apply_mb.styleSheet())
+        apply_cs.clicked.connect(self._emit_shake)
+        cs_lay.addWidget(apply_cs)
+        lay.addWidget(cs_grp)
+
+        # 3D Zoom
+        z3_grp = QGroupBox("3D Zoom")
+        z3_grp.setStyleSheet(mb_grp.styleSheet())
+        z3_lay = QVBoxLayout(z3_grp)
+        self._z3 = {"zoom": 120, "rx": 6, "ry": 6}
+        _slider_row(z3_lay, "Zoom", 100, 200, 120, lambda v: self._z3.__setitem__("zoom", v), "%")
+        _slider_row(z3_lay, "Tilt X", -15, 15, 6, lambda v: self._z3.__setitem__("rx", v), "°")
+        _slider_row(z3_lay, "Tilt Y", -15, 15, 6, lambda v: self._z3.__setitem__("ry", v), "°")
+        apply_z3 = QPushButton("Apply to Clip (animates over clip)")
+        apply_z3.setFixedHeight(30)
+        apply_z3.setStyleSheet(apply_mb.styleSheet())
+        apply_z3.clicked.connect(self._emit_zoom_3d)
+        z3_lay.addWidget(apply_z3)
+        lay.addWidget(z3_grp)
+
         lay.addStretch()
         scroll.setWidget(container)
         out = QVBoxLayout(w)
@@ -346,6 +383,27 @@ class EffectsPanel(QWidget):
             "strength": self._zb_strength / 100.0,
             "center_x": self._zb_cx / 100.0,
             "center_y": self._zb_cy / 100.0,
+        })
+
+    def _cs_preset(self, name, sliders):
+        from src.core.fx_motion import SHAKE_PRESETS
+        p = SHAKE_PRESETS.get(name)
+        if not p:
+            return
+        self._cs_pulse = bool(p.get('pulse'))
+        sliders["amount"].setValue(int(p['amount'] * 100))
+        sliders["speed"].setValue(int(p['speed'] * 100))
+
+    def _emit_shake(self):
+        self.effect_params_changed.emit("camera_shake", {
+            "amount": self._cs["amount"] / 100.0, "speed": self._cs["speed"] / 100.0,
+            "pulse": self._cs_pulse, "seed": 7,
+        })
+
+    def _emit_zoom_3d(self):
+        self.effect_params_changed.emit("zoom_3d", {
+            "zoom": self._z3["zoom"] / 100.0, "rotation_x": float(self._z3["rx"]),
+            "rotation_y": float(self._z3["ry"]), "animate": True,
         })
 
     def _emit_radial_blur(self):

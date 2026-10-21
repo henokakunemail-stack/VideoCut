@@ -6,7 +6,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QSlider, QScrollArea, QGroupBox, QGridLayout, QTabWidget,
     QLineEdit, QSpinBox, QDoubleSpinBox, QCheckBox, QComboBox,
-    QFrame, QSizePolicy, QColorDialog
+    QFrame, QSizePolicy, QColorDialog, QProgressBar
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QTimer
 from PyQt6.QtGui import QColor, QFont
@@ -119,6 +119,8 @@ class ColorButton(QPushButton):
 
 class PropertiesPanel(QWidget):
     clip_changed = pyqtSignal(str)
+    clip_timing_changed = pyqtSignal(str)   # speed/curve/reverse: clip length changes
+    freeze_requested = pyqtSignal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -337,19 +339,23 @@ class PropertiesPanel(QWidget):
 
     def _build_speed_tab(self) -> QWidget:
         w = QWidget()
-        layout = QVBoxLayout(w)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setStyleSheet("QScrollArea { border: none; }")
+        container = QWidget()
+        layout = QVBoxLayout(container)
         layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(12)
+        layout.setSpacing(8)
 
-        # Speed presets
-        presets_label = QLabel("SPEED PRESETS")
-        presets_label.setObjectName("sectionTitle")
-        layout.addWidget(presets_label)
+        def title(text):
+            lb = QLabel(text)
+            lb.setObjectName("sectionTitle")
+            layout.addWidget(lb)
 
+        title("SPEED PRESETS")
         presets_row = QHBoxLayout()
-        speeds = [("0.25x", 0.25), ("0.5x", 0.5), ("0.75x", 0.75),
-                  ("1x", 1.0), ("1.5x", 1.5), ("2x", 2.0), ("4x", 4.0)]
-        for label, val in speeds:
+        for label, val in [("0.25x", 0.25), ("0.5x", 0.5), ("0.75x", 0.75),
+                           ("1x", 1.0), ("1.5x", 1.5), ("2x", 2.0), ("4x", 4.0)]:
             btn = QPushButton(label)
             btn.setFixedHeight(28)
             btn.setStyleSheet("""
@@ -358,26 +364,117 @@ class PropertiesPanel(QWidget):
             """)
             btn.clicked.connect(lambda checked, v=val: self._set_speed(v))
             presets_row.addWidget(btn)
-
         layout.addLayout(presets_row)
 
-        # Custom speed
-        speed_label = QLabel("CUSTOM SPEED")
-        speed_label.setObjectName("sectionTitle")
-        layout.addWidget(speed_label)
-
+        title("CUSTOM SPEED")
         self.speed_slider = SliderRow("Speed", 0.1, 10.0, 1.0, 9.9)
-        self.speed_slider.value_changed.connect(lambda v: self._set_clip_attr("speed", v))
+        self.speed_slider.value_changed.connect(lambda v: self._set_timing("speed", v))
         layout.addWidget(self.speed_slider)
 
-        # Reverse
+        title("SPEED CURVE")
+        from src.ui.motion_widgets import SpeedCurveEditor
+        self.speed_curve = SpeedCurveEditor()
+        self.speed_curve.changed.connect(lambda c: self._set_timing("speed_curve", c))
+        layout.addWidget(self.speed_curve)
+
+        title("PLAYBACK")
         self.reverse_check = QCheckBox("Reverse")
         self.reverse_check.setStyleSheet("color: white; font-size: 12px;")
-        self.reverse_check.toggled.connect(lambda v: self._set_clip_attr("reverse", v))
+        self.reverse_check.toggled.connect(lambda v: self._set_timing("reverse", v))
         layout.addWidget(self.reverse_check)
 
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Smooth slow-mo"))
+        self.frame_mode_combo = QComboBox()
+        for label, key in (("Off", "none"), ("Frame blend", "blend"), ("Optical flow", "optical_flow")):
+            self.frame_mode_combo.addItem(label, key)
+        self.frame_mode_combo.currentIndexChanged.connect(
+            lambda _: self._set_clip_attr("frame_mode", self.frame_mode_combo.currentData()))
+        row.addWidget(self.frame_mode_combo, 1)
+        layout.addLayout(row)
+        note = QLabel("Preview uses blend while playing; paused/export use full quality.")
+        note.setWordWrap(True)
+        note.setStyleSheet("color:#777;font-size:10px;")
+        layout.addWidget(note)
+
+        self.freeze_btn = QPushButton("Freeze Frame at Playhead")
+        self.freeze_btn.clicked.connect(lambda: self.freeze_requested.emit(self.clip.id) if self.clip else None)
+        layout.addWidget(self.freeze_btn)
+
+        title("STABILIZE")
+        row = QHBoxLayout()
+        self.stab_level = QComboBox()
+        for label, key in (("Low", "low"), ("Medium", "medium"), ("High", "high")):
+            self.stab_level.addItem(label, key)
+        self.stab_level.setCurrentIndex(1)
+        row.addWidget(self.stab_level, 1)
+        self.stab_btn = QPushButton("Analyze")
+        self.stab_btn.clicked.connect(self._stab_start)
+        row.addWidget(self.stab_btn)
+        self.stab_clear = QPushButton("Clear")
+        self.stab_clear.clicked.connect(self._stab_clear)
+        row.addWidget(self.stab_clear)
+        layout.addLayout(row)
+        self.stab_bar = QProgressBar()
+        self.stab_bar.setVisible(False)
+        layout.addWidget(self.stab_bar)
+        self.stab_status = QLabel("")
+        self.stab_status.setStyleSheet("color:#777;font-size:10px;")
+        layout.addWidget(self.stab_status)
+        self._stab_worker = self._stab_thread = None
+
         layout.addStretch()
+        scroll.setWidget(container)
+        outer = QVBoxLayout(w)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(scroll)
         return w
+
+    def _stab_start(self):
+        """Analyze button doubles as Cancel while running."""
+        from src.ui.motion_widgets import StabilizeWorker, start_worker
+        if self._stab_worker:
+            self._stab_worker.cancel()
+            return
+        c = self.clip
+        if not c or c.clip_type != ClipType.VIDEO or c.freeze:
+            return
+        self._stab_clip = c
+        self._stab_worker = StabilizeWorker(c.source_path, c.source_start, c.source_end, self.stab_level.currentData())
+        self._stab_worker.progress.connect(self.stab_bar.setValue)
+        self._stab_worker.finished.connect(self._stab_done)
+        self.stab_bar.setValue(0)
+        self.stab_bar.setVisible(True)
+        self.stab_btn.setText("Cancel")
+        self._stab_thread = start_worker(self._stab_worker, self)
+
+    def _stab_done(self, res):
+        self._stab_worker = None
+        self.stab_bar.setVisible(False)
+        self.stab_btn.setText("Analyze")
+        if res:
+            self._stab_clip.stabilize = res
+            self.clip_changed.emit(self._stab_clip.id)
+        else:
+            self.stab_status.setText("Cancelled or failed")
+            return
+        if self.clip is self._stab_clip:
+            self._stab_status()
+
+    def _stab_clear(self):
+        if self.clip:
+            self.clip.stabilize = {}
+            self.clip_changed.emit(self.clip.id)
+            self._stab_status()
+
+    def _stab_status(self):
+        st = self.clip.stabilize if self.clip else None
+        if not st:
+            self.stab_status.setText("Not analysed")
+        elif st.get("path") != self.clip.source_path:
+            self.stab_status.setText("Stale: source changed, analyse again")
+        else:
+            self.stab_status.setText(f"Analysed {len(st['transforms'])} frames ({st['level']}), zoom {st['zoom']:.2f}x")
 
     def _build_text_props_tab(self) -> QWidget:
         w = QWidget()
@@ -559,6 +656,17 @@ class PropertiesPanel(QWidget):
         # Speed
         self.speed_slider.set_value(clip.speed)
         self.reverse_check.setChecked(clip.reverse)
+        self.speed_curve.set_curve(clip.speed_curve)
+        self._update_curve_info()
+        self.frame_mode_combo.setCurrentIndex(max(0, self.frame_mode_combo.findData(clip.frame_mode)))
+        timed = clip.clip_type in (ClipType.VIDEO, ClipType.AUDIO) and not clip.freeze
+        for wdg in (self.speed_slider, self.speed_curve, self.reverse_check):
+            wdg.setEnabled(timed)
+        self.frame_mode_combo.setEnabled(clip.clip_type == ClipType.VIDEO and not clip.freeze)
+        self.freeze_btn.setEnabled(clip.clip_type == ClipType.VIDEO and not clip.freeze)
+        for wdg in (self.stab_level, self.stab_btn, self.stab_clear):
+            wdg.setEnabled(clip.clip_type == ClipType.VIDEO and not clip.freeze)
+        self._stab_status()
 
         # Text
         if clip.clip_type == ClipType.TEXT:
@@ -630,12 +738,29 @@ class PropertiesPanel(QWidget):
         setattr(self.clip, attr, value)
         self.clip_changed.emit(self.clip.id)
 
+    def _set_timing(self, attr: str, value):
+        if self._updating or not self.clip:
+            return
+        setattr(self.clip, attr, value)
+        self._update_curve_info()
+        self.clip_timing_changed.emit(self.clip.id)
+
     def _set_speed(self, speed: float):
         if not self.clip:
             return
         self.speed_slider.set_value(speed)
         self.clip.speed = speed
-        self.clip_changed.emit(self.clip.id)
+        self.clip.speed_curve = []
+        self.speed_curve.set_curve([])
+        self._update_curve_info()
+        self.clip_timing_changed.emit(self.clip.id)
+
+    def _update_curve_info(self):
+        if not self.clip or self.clip.clip_type not in (ClipType.VIDEO, ClipType.AUDIO):
+            return
+        from src.core import timemap
+        self.speed_curve.set_info(f"Duration: {timemap.duration_ms(self.clip) / 1000:.2f}s"
+                                  + ("  (curve overrides Speed)" if self.clip.speed_curve else ""))
 
     def _on_text_changed(self, text: str):
         if self._updating or not self.clip:

@@ -31,3 +31,6 @@ env/
 .idea/
 *.tmp
 *.log
+
+# AI model weights (fetched by tools/fetch_models.py)
+models/

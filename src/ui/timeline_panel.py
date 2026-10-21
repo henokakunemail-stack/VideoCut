@@ -162,11 +162,12 @@ class ClipWidget(QWidget):
         painter.drawText(rect.adjusted(4, 4, -4, 0), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop, text)
 
         # Speed indicator
-        if self.clip.speed != 1.0:
+        badge = ("❄ " if self.clip.freeze else "") + ("⏪ " if self.clip.reverse else "")
+        badge += "curve" if self.clip.speed_curve else (f"{self.clip.speed:.1f}x" if self.clip.speed != 1.0 else "")
+        if badge:
             painter.setFont(QFont("Segoe UI", 8))
             painter.drawText(rect.adjusted(4, 0, -4, -4),
-                           Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom,
-                           f"{self.clip.speed:.1f}x")
+                           Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom, badge.strip())
 
         # Selection border
         if self._selected:
@@ -206,6 +207,8 @@ class TimelineCanvas(QWidget):
     """The main scrollable timeline area where clips are placed."""
     clip_selected = pyqtSignal(str)
     clip_deleted = pyqtSignal(str)
+    freeze_requested = pyqtSignal(str)
+    reverse_requested = pyqtSignal(str)
     time_changed = pyqtSignal(int)
     clip_moved = pyqtSignal(str, int)  # clip_id, new_start_ms
 
@@ -409,13 +412,18 @@ class TimelineCanvas(QWidget):
             QMenu::item:selected { background: #fe2c55; }
         """)
         cut_act = menu.addAction("✂  Split Here")
-        dup_act = menu.addAction("⎘  Duplicate")
+        freeze_act = menu.addAction("❄  Freeze Frame")
+        rev_act = menu.addAction("⏪  Reverse")
         menu.addSeparator()
         del_act = menu.addAction("🗑  Delete")
 
         action = menu.exec(pos)
         if action == del_act:
             self.clip_deleted.emit(clip_id)
+        elif action == freeze_act:
+            self.freeze_requested.emit(clip_id)
+        elif action == rev_act:
+            self.reverse_requested.emit(clip_id)
         elif action == cut_act:
             # Split at current playhead
             t = int(self.playhead_x / self.pixels_per_second * 1000)
@@ -463,6 +471,8 @@ class TimelinePanel(QWidget):
     time_changed = pyqtSignal(int)
     clip_selected = pyqtSignal(str)
     clip_deleted = pyqtSignal(str)
+    freeze_requested = pyqtSignal(str)
+    reverse_requested = pyqtSignal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -544,6 +554,8 @@ class TimelinePanel(QWidget):
         self.canvas = TimelineCanvas()
         self.canvas.clip_selected.connect(self._on_clip_selected)
         self.canvas.clip_deleted.connect(self.clip_deleted)
+        self.canvas.freeze_requested.connect(self.freeze_requested)
+        self.canvas.reverse_requested.connect(self.reverse_requested)
         self.canvas.time_changed.connect(self.time_changed)
         self.scroll_area.setWidget(self.canvas)
 

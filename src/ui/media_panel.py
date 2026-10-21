@@ -487,6 +487,10 @@ class MediaPanel(QWidget):
         for i, (name, eid) in enumerate(EFFECTS_LIST):
             card = EffectCard(name, eid)
             card.effect_applied.connect(self.effect_applied)
+            from src.core.renderer import CARD_EFFECTS
+            if eid not in CARD_EFFECTS:
+                card.setEnabled(False)
+                card.setToolTip("Not available yet")
             grid.addWidget(card, i // 2, i % 2)
 
         grid.setRowStretch(grid.rowCount(), 1)

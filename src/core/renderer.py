@@ -32,6 +32,17 @@ EFFECTS = {
 }
 
 
+from src.core import fx_motion
+EFFECTS.update({k: v[0] for k, v in fx_motion.FX.items()})
+# media-panel effect card id -> (effect id, default params); cards missing here are shown disabled
+CARD_EFFECTS = {k: (k, dict(v[1])) for k, v in fx_motion.FX.items()}
+CARD_EFFECTS.update({
+    'glitch': ('glitch_rgb', {'intensity': .5}), 'vhs': ('vhs_wobble', {'intensity': .5}),
+    'chromatic': ('chromatic_aberration', {'amount': .5}),
+    'shake': ('camera_shake', dict(fx_motion.FX['camera_shake'][1])),
+})
+
+
 def set_effect(clip, effect_id: str, params: dict):
     """Add/replace effect on clip. params['enabled']==False removes it."""
     clip.effects = [e for e in clip.effects if e.effect_id != effect_id]
@@ -41,12 +52,50 @@ def set_effect(clip, effect_id: str, params: dict):
 
 
 def source_time(clip, time_ms: int) -> int:
-    """Timeline time -> source media time (ms), honouring speed and reverse."""
-    ratio = max(0.0, min(1.0, (time_ms - clip.timeline_start) / max(1, clip.duration)))
-    if clip.reverse:
-        ratio = 1.0 - ratio
-    t = clip.source_start + ratio * (clip.source_end - clip.source_start)
-    return int(t / (clip.speed or 1.0))
+    """Timeline time -> source media time (ms), honouring speed, curve, reverse, freeze."""
+    from src.core import timemap
+    return int(timemap.source_ms(clip, time_ms))
+
+
+def fetch_clip_frame(readers: dict, clip, time_ms: int, fast: bool = False):
+    """Raw source frame (RGB/RGBA) for a clip at timeline time. Shared by preview and export.
+    readers: path -> reader cache owned by the caller. fast=True skips slow interpolation."""
+    from src.core.project import ClipType
+    from src.core.video_player import VideoReader, ImageReader
+    path = clip.source_path
+    if clip.clip_type in (ClipType.IMAGE, ClipType.STICKER):
+        if path not in readers:
+            readers[path] = ImageReader(path)
+        return readers[path].read_frame()
+    if clip.clip_type != ClipType.VIDEO:
+        return None
+    if path not in readers:
+        r = VideoReader(path)
+        readers[path] = r if r.is_valid() else None
+    r = readers[path]
+    if r is None:
+        return None
+    from src.core import timemap
+    ms = timemap.source_ms(clip, time_ms)
+    mode = getattr(clip, 'frame_mode', 'none')
+    if mode == 'none' or clip.freeze:
+        return r.read_frame(ms)
+    pos = ms / 1000.0 * r.fps
+    n = int(pos + 1e-6)
+    a = pos - n
+    f0 = r.read_index(n)
+    if f0 is None or a < 0.02 or n + 1 >= r.total_frames:
+        return None if f0 is None else f0.copy()
+    f1 = r.read_index(n + 1)
+    if f1 is None:
+        return f0.copy()
+    if mode == 'optical_flow' and not fast:
+        try:
+            from src.core.interp import interpolate
+            return interpolate(f0, f1, a, key=(path, n))
+        except ImportError:
+            pass
+    return cv2.addWeighted(f0, 1 - a, f1, a, 0)
 
 
 def text_infos_at(project, time_ms: int):
@@ -143,6 +192,11 @@ def _layer(clip, frame, time_ms, extra=None):
         return None, None
     progress = (time_ms - clip.timeline_start) / max(1, clip.duration)
 
+    st = clip.stabilize
+    if st and st.get('transforms') and st.get('path') == clip.source_path:
+        from src.core import stabilize, timemap
+        frame = stabilize.apply(frame, st, timemap.source_ms(clip, time_ms))
+
     frame = FP.apply_flip(frame, clip.flip_h, clip.flip_v)
     frame = FP.apply_crop(frame, clip.crop_left, clip.crop_right, clip.crop_top, clip.crop_bottom)
     alpha = None
@@ -165,7 +219,7 @@ def _layer(clip, frame, time_ms, extra=None):
     for e in clip.effects:
         fn = EFFECTS.get(e.effect_id)
         if fn:
-            frame = fn(frame, e.params, progress)
+            frame = fn(frame, {**e.params, '_t': time_ms / 1000.0}, progress)
 
     blur = (extra or {}).get('blur', 0.0)
     if blur > 0.1:

@@ -293,35 +293,8 @@ class PreviewPanel(QWidget):
         self.canvas.set_frame(pixmap, text_infos)
 
     def _get_clip_frame(self, clip, time_ms: int):
-        from src.core.video_player import VideoReader, ImageReader
-        path = clip.source_path
-
-        if clip.clip_type == ClipType.IMAGE:
-            if path not in self._readers:
-                self._readers[path] = ImageReader(path)
-            reader = self._readers[path]
-            return reader.read_frame()
-
-        elif clip.clip_type == ClipType.STICKER:
-            if path not in self._readers:
-                self._readers[path] = ImageReader(path)
-            return self._readers[path].read_frame()
-
-        elif clip.clip_type == ClipType.VIDEO:
-            if path not in self._readers:
-                reader = VideoReader(path)
-                if reader.is_valid():
-                    self._readers[path] = reader
-                else:
-                    return None
-
-            reader = self._readers.get(path)
-            if reader:
-                from src.core.renderer import source_time
-                src_time = source_time(clip, time_ms)
-                return reader.read_frame(src_time)
-
-        return None
+        from src.core.renderer import fetch_clip_frame
+        return fetch_clip_frame(self._readers, clip, time_ms, fast=self._playing)
 
     def toggle_play(self):
         self._playing = not self._playing

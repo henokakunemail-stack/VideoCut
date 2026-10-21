@@ -13,7 +13,7 @@ import cv2
 import numpy as np
 
 from src.core.project import ClipType
-from src.core.renderer import compose_frame, source_time, text_infos_at
+from src.core.renderer import compose_frame, fetch_clip_frame, text_infos_at
 
 # format key -> (container ext, video args, audio codec args)
 CODECS = {
@@ -47,19 +47,20 @@ def has_audio(path: str) -> bool:
 
 
 def _audio_sources(project):
-    """Yield dicts: path, src_start/src_end (ms), tl_start (ms), speed, volume, fade_in/out (s)."""
+    """Yield dicts: path, segs [(src_lo_ms, src_hi_ms, reversed, speed)], tl_start/tl_dur (ms),
+    volume, fade_in/out (s). Speed curves arrive as several constant-speed segments."""
+    from src.core import timemap
     for c in project.clips:
-        if c.clip_type in (ClipType.VIDEO, ClipType.AUDIO) and c.source_path and not c.muted and c.volume > 0:
-            if has_audio(c.source_path):
-                yield dict(path=c.source_path, src_start=c.source_start, src_end=c.source_end,
-                           tl_start=c.timeline_start, tl_dur=c.duration, speed=c.speed or 1.0,
-                           volume=c.volume, fade_in=c.audio_fade_in, fade_out=c.audio_fade_out,
-                           reverse=c.reverse)
+        if c.clip_type in (ClipType.VIDEO, ClipType.AUDIO) and c.source_path and not c.muted                 and c.volume > 0 and not c.freeze:
+            segs = timemap.audio_segments(c)
+            if segs and has_audio(c.source_path):
+                yield dict(path=c.source_path, segs=segs, tl_start=c.timeline_start, tl_dur=c.duration,
+                           volume=c.volume, fade_in=c.audio_fade_in, fade_out=c.audio_fade_out)
     for t in project.audio_tracks:
         if t.source_path and not t.muted and t.volume > 0:
-            yield dict(path=t.source_path, src_start=t.source_start, src_end=t.source_end,
-                       tl_start=t.timeline_start, tl_dur=t.duration, speed=1.0,
-                       volume=t.volume, fade_in=t.fade_in, fade_out=t.fade_out, reverse=False)
+            yield dict(path=t.source_path, segs=[(t.source_start, t.source_end, False, 1.0)],
+                       tl_start=t.timeline_start, tl_dur=t.duration,
+                       volume=t.volume, fade_in=t.fade_in, fade_out=t.fade_out)
 
 
 def _atempo(speed: float) -> str:
@@ -80,19 +81,28 @@ def build_audio_cmd(sources, duration_s):
     ins, chains, labels = [], [], []
     for i, s in enumerate(sources):
         ins += ['-i', s['path']]
-        f = [f"atrim=start={s['src_start']/1000:.3f}:end={s['src_end']/1000:.3f}", 'asetpts=PTS-STARTPTS']
-        if s['reverse']:
-            f.append('areverse')
-        if abs(s['speed'] - 1.0) > 1e-3:
-            f.append(_atempo(s['speed']))
+        segs, n = s['segs'], len(s['segs'])
+        if n > 1:
+            chains.append(f"[{i + 1}:a]asplit={n}" + ''.join(f'[i{i}_{k}]' for k in range(n)))
+        for k, (lo, hi, rev, spd) in enumerate(segs):
+            f = [f"atrim=start={lo/1000:.3f}:end={hi/1000:.3f}", 'asetpts=PTS-STARTPTS']
+            if rev:
+                f.append('areverse')
+            if abs(spd - 1.0) > 1e-3:
+                f.append(_atempo(spd))
+            src = f"[i{i}_{k}]" if n > 1 else f"[{i + 1}:a]"
+            chains.append(f"{src}{','.join(f)}[s{i}_{k}]")
         dur = s['tl_dur'] / 1000
+        tail = [f"apad=whole_dur={dur:.3f}", f"atrim=0:{dur:.3f}"]
         if s['fade_in'] > 0:
-            f.append(f"afade=t=in:st=0:d={s['fade_in']:.3f}")
+            tail.append(f"afade=t=in:st=0:d={s['fade_in']:.3f}")
         if s['fade_out'] > 0:
-            f.append(f"afade=t=out:st={max(0, dur - s['fade_out']):.3f}:d={s['fade_out']:.3f}")
-        f.append(f"volume={s['volume']:.3f}")
-        f.append(f"adelay={int(s['tl_start'])}|{int(s['tl_start'])}")
-        chains.append(f"[{i + 1}:a]{','.join(f)}[a{i}]")
+            tail.append(f"afade=t=out:st={max(0, dur - s['fade_out']):.3f}:d={s['fade_out']:.3f}")
+        tail.append(f"volume={s['volume']:.3f}")
+        tail.append(f"adelay={int(s['tl_start'])}|{int(s['tl_start'])}")
+        joined = ''.join(f'[s{i}_{k}]' for k in range(n))
+        head = f"{joined}concat=n={n}:v=0:a=1," if n > 1 else f"{joined}"
+        chains.append(f"{head}{','.join(tail)}[a{i}]")
         labels.append(f'[a{i}]')
     chains.append(f"{''.join(labels)}amix=inputs={len(sources)}:normalize=0:duration=longest,"
                   f"atrim=0:{duration_s:.3f}[aout]")
@@ -135,19 +145,9 @@ def export_project(project, s: dict, progress=lambda pct: None, cancelled=lambda
            *vargs, *qargs, '-an', silent]
 
     readers = {}
-    from src.core.video_player import VideoReader, ImageReader
 
     def get_frame(clip, t_ms):
-        path = clip.source_path
-        if clip.clip_type in (ClipType.IMAGE, ClipType.STICKER):
-            if path not in readers:
-                readers[path] = ImageReader(path)
-            return readers[path].read_frame()
-        if path not in readers:
-            r = VideoReader(path)
-            readers[path] = r if r.is_valid() else None
-        r = readers[path]
-        return r.read_frame(source_time(clip, t_ms)) if r else None
+        return fetch_clip_frame(readers, clip, t_ms)
 
     trans_cache = {}
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE)

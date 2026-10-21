@@ -107,8 +107,11 @@ class KeyframePanel(QWidget):
         ease_row.addWidget(ease_lbl)
         self._ease_combo = QComboBox()
         self._ease_combo.addItems([
-            "ease_in_out", "linear", "ease_in", "ease_out", "bounce", "elastic"
+            "ease_in_out", "linear", "ease_in", "ease_out", "bounce", "elastic",
+            "bezier:0.25,0.1,0.25,1", "bezier:0.34,1.56,0.64,1", "bezier:0.9,0,0.1,1"
         ])
+        for i, tip in ((6, "Ease"), (7, "Back-out (overshoot)"), (8, "Snap")):
+            self._ease_combo.setItemData(i, tip, Qt.ItemDataRole.ToolTipRole)
         self._ease_combo.setStyleSheet(
             "QComboBox{background:#2a2a2a;color:#ccc;border:1px solid #3a3a3a;"
             "border-radius:4px;padding:3px 8px;}"
