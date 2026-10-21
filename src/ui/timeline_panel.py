@@ -139,7 +139,7 @@ class ClipWidget(QWidget):
         rect = self.rect().adjusted(1, 1, -1, -1)
 
         # Background gradient
-        grad = QLinearGradient(rect.topLeft(), rect.bottomLeft())
+        grad = QLinearGradient(rect.topLeft().toPointF(), rect.bottomLeft().toPointF())
         grad.setColorAt(0, c1)
         grad.setColorAt(1, c2)
         painter.setBrush(QBrush(grad))
