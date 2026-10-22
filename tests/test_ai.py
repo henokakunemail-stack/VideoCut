@@ -112,7 +112,7 @@ for proj in (None, 'filled'):
         win.project.add_clip(Clip(clip_type=ClipType.VIDEO, source_path=vid, timeline_end=2000, source_end=2000))
         win.timeline_panel.selected_clip_id = win.project.clips[0].id
     win._open_auto_captions(); win._open_bg_removal(); win._open_voice_fx()
-    win._on_bg_removal({'bg_video': None})
+    win._on_bg_removal({'action': 'style', 'mode': 'color', 'color': '#000000', 'feather': 0, 'bg_path': ''})
     win._on_captions_ready(type('T', (), {'subtitles': [type('S', (), {'start': 0.5, 'end': 1.0, 'text': 'hello'})()]})(), win.project.clips[0] if proj else None)
 assert any(c.clip_type == ClipType.TEXT and c.text_content == 'hello' for c in win.project.clips)
 

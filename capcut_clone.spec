@@ -49,11 +49,17 @@ hidden_imports = [
     'src.ui.audio_fx_panel',
     'src.ui.effects_panel',
     # AI (src/ai): heavy libs are imported lazily
-    'src.ai.models', 'src.ai.runtime', 'src.ai.assets', 'src.ai.bake', 'src.ai.media',
+    'src.ai.models', 'src.ai.runtime', 'src.ai.assets', 'src.ai.bake', 'src.ai.media', 'src.ai.matting',
+    'src.ui.audio_preview',
     'src.ui.workers',
     'onnxruntime',
     'faster_whisper',
 ]
+
+# bundle default models only; the optional large ones (isnet) need VIDEOCUT_MODELS=all
+_big = set() if os.environ.get('VIDEOCUT_MODELS') == 'all' else {'isnet-general-use.onnx'}
+MODEL_DATAS = [(os.path.join('models', f), 'models') for f in (os.listdir('models') if os.path.isdir('models') else [])
+               if f.endswith('.onnx') and f not in _big]
 
 a = Analysis(
     ['main.py'],
@@ -61,7 +67,7 @@ a = Analysis(
     binaries=[],
     datas=[
         ('assets', 'assets'),
-    ] + ([('models', 'models')] if os.path.isdir('models') else []),   # run tools/fetch_models.py first
+    ] + MODEL_DATAS,   # run tools/fetch_models.py first
     hiddenimports=hidden_imports,
     hookspath=[],
     hooksconfig={

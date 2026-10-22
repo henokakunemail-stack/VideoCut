@@ -23,6 +23,7 @@ class Model:
     license: str
     source_url: str
     size_mb: float = 0.0
+    optional: bool = False   # large/High-quality variants: fetched only on request (VIDEOCUT_MODELS=all)
 
 
 MODELS: dict = {}

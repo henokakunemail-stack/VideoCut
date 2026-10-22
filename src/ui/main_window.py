@@ -2,6 +2,7 @@
 Main Window - professional layout
 """
 
+import copy
 import os
 import json
 from PyQt6.QtWidgets import (
@@ -581,20 +582,109 @@ class MainWindow(QMainWindow):
         dlg = BackgroundPanel(self)
         dlg.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.WindowStaysOnTopHint)
         dlg.setWindowTitle("AI Background Removal")
-        dlg.resize(320, 480)
+        dlg.resize(340, 520)
+        clip = self._get_selected_clip()
+        if clip and clip.ai.get("matte_style"):
+            dlg.set_style(clip.ai["matte_style"])
         dlg.bg_removal_requested.connect(self._on_bg_removal)
         dlg.show()
         self._bg_dlg = dlg
 
     def _on_bg_removal(self, req: dict):
-        # ponytail: req['bg_color'/'feather'/'method'] ignored until the matting bake (4e)
+        """preview | apply | cancel | remove | style. Bake runs in a Worker bound to the clip id (survives re-selection)."""
+        import os
+        from src.ai import assets, matting
+        act, dlg = req["action"], getattr(self, "_bg_dlg", None)
+        say = dlg.set_status if dlg else (lambda _t: None)
+        if act == "cancel":
+            if getattr(self, "_bg_worker", None):
+                self._bg_worker.cancel()
+            return
         clip = self._get_selected_clip()
-        if clip and clip.clip_type in (ClipType.VIDEO, ClipType.IMAGE):
-            clip.remove_background = True
-            clip.background_path = req.get("bg_video") or ""
-            self._on_clip_property_changed(clip.id)
-        else:
+        if not clip or clip.clip_type not in (ClipType.VIDEO, ClipType.IMAGE):
             self.status_bar.showMessage("Select a video or image clip first")
+            say("Select a video or image clip first")
+            return
+        style = {k: req[k] for k in ("mode", "color", "feather")} | {"path": req.get("bg_path", "")}
+        if act == "style":
+            if "matte" in clip.ai:
+                clip.ai["matte_style"] = style
+                self._on_clip_property_changed(clip.id)
+            return
+        if act == "remove":
+            m = clip.ai.pop("matte", None)
+            clip.ai.pop("matte_style", None)
+            if m and os.path.isfile(m["path"]):
+                try:
+                    os.remove(m["path"])
+                except OSError:
+                    pass
+            self._on_clip_property_changed(clip.id)
+            say("Background removed")
+            return
+        if getattr(self, "_bg_worker", None):
+            say("Already running")
+            return
+        if act == "preview":
+            self._bg_preview(clip, req, style)
+            return
+        # apply
+        from src.ui.workers import Worker, start_worker
+        cid, out_dir = clip.id, assets.asset_dir(self.project)
+        w = Worker(lambda progress, cancelled: matting.bake_matte(clip, out_dir, req["quality"], progress=progress, cancelled=cancelled))
+        self._bg_worker = w
+        if dlg:
+            dlg.set_busy(True)
+            w.progress.connect(dlg.set_progress)
+        say("Matting…")
+
+        def done(meta):
+            self._bg_worker = None
+            c = self.project.get_clip(cid)
+            if dlg:
+                dlg.set_busy(False)
+            if meta and c:
+                c.ai["matte"] = meta
+                c.ai["matte_style"] = style
+                self.project.is_modified = True
+                self._on_clip_property_changed(cid)
+                say("Done")
+            elif not meta:
+                say(getattr(self, "_bg_err", "") or "Cancelled")
+            self._bg_err = ""
+        w.error.connect(lambda m: setattr(self, "_bg_err", f"Failed: {m}"))
+        w.finished.connect(done)
+        self._bg_thread = start_worker(w, self)
+
+    def _bg_preview(self, clip, req, style):
+        """Matte one frame at the playhead on the UI thread (~0.1 s for the Fast model)."""
+        import numpy as np
+        from src.ai import matting
+        from src.core.renderer import fetch_clip_frame
+        dlg = self._bg_dlg
+        try:
+            t = max(clip.timeline_start, min(self.current_time_ms, clip.timeline_end - 1))
+            probe = copy.copy(clip)
+            probe.ai = {}                      # raw source frame, no matte
+            readers = {}
+            f = fetch_clip_frame(readers, probe, t)
+            if f is None:
+                dlg.set_status("Cannot read frame")
+                return
+            rgb = np.ascontiguousarray(f[..., :3])
+            a = matting.make_frame_fn(req["quality"])(rgb)[..., 0:1].astype(np.float32) / 255.0
+        except Exception as e:  # missing model / onnxruntime
+            dlg.set_status(f"Preview failed: {e}")
+            return
+        if style["mode"] == "color":
+            c = style["color"].lstrip("#")
+            bg = np.empty_like(rgb)
+            bg[:] = [int(c[i:i + 2], 16) for i in (0, 2, 4)]
+        else:
+            yy, xx = np.mgrid[:rgb.shape[0], :rgb.shape[1]]
+            bg = np.repeat((((yy // 12 + xx // 12) % 2) * 40 + 60).astype(np.uint8)[..., None], 3, 2)
+        dlg.set_preview((rgb * a + bg * (1 - a)).astype(np.uint8))
+        dlg.set_status("Preview (not baked). Press Apply to bake the whole clip.")
 
     def _open_beat_sync(self):
         """Detect beats of the first audio track off-thread, then trim main-track cuts onto them."""
@@ -775,6 +865,13 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         self._stop_mix()
+        w = getattr(self, "_bg_worker", None)
+        if w:
+            w.cancel()
+            try:
+                self._bg_thread.wait(3000)
+            except RuntimeError:
+                pass
         if self.project.is_modified:
             reply = QMessageBox.question(
                 self, "Unsaved Changes",

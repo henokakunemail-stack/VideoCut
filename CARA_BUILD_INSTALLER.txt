@@ -86,3 +86,8 @@ Ukuran ini normal karena include Python runtime,
 PyQt6 framework, dan OpenCV.
 
 ========================================================
+
+CATATAN MODEL AI
+- build_installer.bat menjalankan toolsetch_models.py (unduh + cek SHA-256 ke folder models\). Model dibundel ke installer; folder models\ tidak di-commit.
+- Default hanya u2netp (~4.4 MB, background removal "Fast"). Set VIDEOCUT_MODELS=all sebelum build untuk menyertakan isnet (~170 MB, "High").
+- Tanpa model: fitur AI terkait menampilkan "model belum terpasang", aplikasi tetap jalan.

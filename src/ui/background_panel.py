@@ -1,289 +1,188 @@
-"""
-Background Removal Panel — AI rembg / GrabCut, bg color/video, feathering.
-"""
+"""Background removal panel: matting bake (Apply), instant style changes (mode/colour/feather), frame preview."""
 
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QSlider, QScrollArea, QFrame, QRadioButton, QButtonGroup,
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QSlider, QComboBox,
     QLineEdit, QFileDialog, QProgressBar, QColorDialog,
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QThread, pyqtSlot
-from PyQt6.QtGui import QColor
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
+from PyQt6.QtGui import QColor, QImage, QPixmap
 
-from src.core.bg_remover import is_rembg_available
+from src.ai import models
+from src.ai.matting import DEFAULT_STYLE, QUALITY
 
-
-def _sec(text: str) -> QLabel:
-    lbl = QLabel(text)
-    lbl.setStyleSheet(
-        "color:#fe2c55;font-size:11px;font-weight:bold;"
-        "background:transparent;margin-top:6px;"
-    )
-    return lbl
-
-
-def _div() -> QFrame:
-    f = QFrame()
-    f.setFrameShape(QFrame.Shape.HLine)
-    f.setStyleSheet("color:#2a2a2a;")
-    return f
+_BTN = ("QPushButton{background:#2a2a2a;color:#ccc;border-radius:6px;border:1px solid #444;padding:6px 10px;}"
+        "QPushButton:hover{background:#333;}QPushButton:disabled{color:#666;}")
+_LBL = "color:#aaa;font-size:11px;background:transparent;"
+MODES = [("Transparent", "transparent"), ("Solid colour", "color"), ("Image / video", "media")]
 
 
 class BackgroundPanel(QWidget):
-    bg_removal_requested = pyqtSignal(dict)
-
-    _PRESET_COLORS = [
-        ("Transparent", (0, 0, 0, 0)),
-        ("Black",       (0, 0, 0, 255)),
-        ("White",       (255, 255, 255, 255)),
-        ("Green",       (0, 177, 64, 255)),
-        ("Blue",        (0, 120, 215, 255)),
-    ]
+    bg_removal_requested = pyqtSignal(dict)   # {action: preview|apply|cancel|remove|style, quality, mode, color, bg_path, feather}
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._bg_color = (0, 177, 64)
+        self._color = DEFAULT_STYLE["color"]
+        self._style_timer = QTimer(self)
+        self._style_timer.setSingleShot(True)
+        self._style_timer.setInterval(150)
+        self._style_timer.timeout.connect(lambda: self._emit("style"))
         self._build_ui()
 
     def _build_ui(self):
-        root = QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(0)
-
-        # Header
-        hdr = QWidget()
-        hdr.setFixedHeight(40)
-        hdr.setStyleSheet("background:#111111;border-bottom:1px solid #2a2a2a;")
-        hdr_lay = QHBoxLayout(hdr)
-        hdr_lay.setContentsMargins(12, 0, 12, 0)
-        title = QLabel("🎭 AI Background Removal")
-        title.setStyleSheet("color:#fff;font-size:13px;font-weight:bold;background:transparent;")
-        hdr_lay.addWidget(title)
-        root.addWidget(hdr)
-
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setStyleSheet("QScrollArea{border:none;}")
-
-        body = QWidget()
-        lay = QVBoxLayout(body)
+        lay = QVBoxLayout(self)
         lay.setContentsMargins(12, 12, 12, 12)
-        lay.setSpacing(4)
+        lay.setSpacing(6)
 
-        # ── Method ────────────────────────────────────────────────────
-        lay.addWidget(_sec("METHOD"))
-        self._method_group = QButtonGroup(self)
-        rembg_ok = is_rembg_available()
+        def row(label, w):
+            r = QHBoxLayout()
+            lb = QLabel(label)
+            lb.setFixedWidth(70)
+            lb.setStyleSheet(_LBL)
+            r.addWidget(lb)
+            r.addWidget(w, 1)
+            lay.addLayout(r)
 
-        for label, val in [("Auto AI", "auto"), ("rembg (AI)", "rembg"), ("GrabCut (fast)", "grabcut")]:
-            rb = QRadioButton(label if val != "rembg" or rembg_ok
-                              else "rembg (AI) — not installed")
-            rb.setProperty("method_val", val)
-            rb.setEnabled(val != "rembg" or rembg_ok)
-            rb.setStyleSheet(
-                "QRadioButton{color:#ccc;font-size:12px;background:transparent;spacing:6px;}"
-                "QRadioButton::indicator{width:14px;height:14px;}"
-                "QRadioButton::indicator:checked{background:#fe2c55;border-radius:7px;}"
-                "QRadioButton::indicator:unchecked{background:#333;border:1px solid #555;border-radius:7px;}"
-            )
-            self._method_group.addButton(rb)
-            lay.addWidget(rb)
-            if val == "auto":
-                rb.setChecked(True)
+        self.quality = QComboBox()
+        for name, q in (("Fast (U2-Net small)", "fast"), ("High (IS-Net)", "high")):
+            self.quality.addItem(name, q)
+            if not models.available(QUALITY[q]):
+                self.quality.model().item(self.quality.count() - 1).setEnabled(False)
+        row("Quality", self.quality)
+        self.have_model = models.available(QUALITY["fast"]) or models.available(QUALITY["high"])
+        if self.have_model and not models.available(QUALITY["fast"]):
+            self.quality.setCurrentIndex(1)
 
-        lay.addWidget(_div())
+        self.mode = QComboBox()
+        for name, m in MODES:
+            self.mode.addItem(name, m)
+        self.mode.currentIndexChanged.connect(self._style_changed)
+        row("Background", self.mode)
 
-        # ── Background color ──────────────────────────────────────────
-        lay.addWidget(_sec("BACKGROUND"))
+        self.color_btn = QPushButton()
+        self.color_btn.setFixedHeight(26)
+        self.color_btn.clicked.connect(self._pick_color)
+        row("Colour", self.color_btn)
+        self._paint_color()
 
-        color_row = QHBoxLayout()
-        self._color_btn = QPushButton()
-        self._color_btn.setFixedSize(36, 28)
-        self._update_color_btn()
-        self._color_btn.clicked.connect(self._pick_color)
-        color_row.addWidget(self._color_btn)
+        self.media = QLineEdit()
+        self.media.setReadOnly(True)
+        self.media.setPlaceholderText("No image / video selected")
+        b = QPushButton("Browse")
+        b.setStyleSheet(_BTN)
+        b.clicked.connect(self._browse)
+        h = QHBoxLayout()
+        h.addWidget(self.media, 1)
+        h.addWidget(b)
+        w = QWidget()
+        w.setLayout(h)
+        h.setContentsMargins(0, 0, 0, 0)
+        row("Media", w)
 
-        color_lbl = QLabel("Custom color")
-        color_lbl.setStyleSheet("color:#aaa;font-size:11px;background:transparent;")
-        color_row.addWidget(color_lbl)
-        color_row.addStretch()
-        lay.addLayout(color_row)
+        self.feather = QSlider(Qt.Orientation.Horizontal)
+        self.feather.setRange(0, 20)
+        self.feather.valueChanged.connect(self._style_changed)
+        row("Feather", self.feather)
 
-        preset_row = QHBoxLayout()
-        preset_row.setSpacing(4)
-        for name, rgba in self._PRESET_COLORS:
-            btn = QPushButton()
-            btn.setFixedSize(28, 28)
-            btn.setToolTip(name)
-            if rgba[3] == 0:
-                btn.setStyleSheet(
-                    "QPushButton{background: qlineargradient("
-                    "x1:0,y1:0,x2:1,y2:1,"
-                    "stop:0 #fff,stop:0.5 #ccc,stop:1 #fff);"
-                    "border-radius:4px;border:1px solid #555;}"
-                )
-            else:
-                r, g, b, _ = rgba
-                btn.setStyleSheet(
-                    f"QPushButton{{background:rgb({r},{g},{b});border-radius:4px;"
-                    "border:1px solid #555;}"
-                    "QPushButton:hover{border:2px solid #fe2c55;}"
-                )
-            rgb = rgba[:3]
-            btn.clicked.connect(lambda _, c=rgb: self._set_color(c))
-            preset_row.addWidget(btn)
-        preset_row.addStretch()
-        lay.addLayout(preset_row)
-        lay.addWidget(_div())
+        self.preview = QLabel()
+        self.preview.setMinimumHeight(140)
+        self.preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.preview.setStyleSheet("background:#111;border:1px solid #2a2a2a;" + _LBL)
+        lay.addWidget(self.preview, 1)
 
-        # ── Background video ──────────────────────────────────────────
-        lay.addWidget(_sec("BACKGROUND VIDEO (optional)"))
+        self.status = QLabel("" if self.have_model else
+                             "Matting model not installed. Run: python tools/fetch_models.py")
+        self.status.setWordWrap(True)
+        self.status.setStyleSheet(_LBL)
+        lay.addWidget(self.status)
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 100)
+        self.progress.setVisible(False)
+        lay.addWidget(self.progress)
 
-        vid_row = QHBoxLayout()
-        self._vid_path = QLineEdit()
-        self._vid_path.setPlaceholderText("No video selected…")
-        self._vid_path.setReadOnly(True)
-        self._vid_path.setStyleSheet(
-            "background:#2a2a2a;color:#ccc;border:1px solid #3a3a3a;"
-            "border-radius:4px;padding:4px;font-size:11px;"
-        )
-        vid_row.addWidget(self._vid_path, 1)
+        r = QHBoxLayout()
+        self.preview_btn = QPushButton("Preview frame")
+        self.apply_btn = QPushButton("Apply")
+        self.cancel_btn = QPushButton("Cancel")
+        self.remove_btn = QPushButton("Remove")
+        for btn, act in ((self.preview_btn, "preview"), (self.apply_btn, "apply"),
+                         (self.cancel_btn, "cancel"), (self.remove_btn, "remove")):
+            btn.setStyleSheet(_BTN)
+            btn.clicked.connect(lambda _=False, a=act: self._emit(a))
+            r.addWidget(btn)
+        self.apply_btn.setStyleSheet(_BTN.replace("#2a2a2a", "#fe2c55"))
+        lay.addLayout(r)
+        for btn in (self.preview_btn, self.apply_btn):
+            btn.setEnabled(self.have_model)
+        self.set_busy(False)
+        self._sync_rows()
 
-        browse_btn = QPushButton("Browse")
-        browse_btn.setFixedHeight(28)
-        browse_btn.setStyleSheet(
-            "QPushButton{background:#2a2a2a;color:#ccc;border-radius:4px;"
-            "border:1px solid #3a3a3a;font-size:11px;padding:0 8px;}"
-            "QPushButton:hover{border-color:#fe2c55;}"
-        )
-        browse_btn.clicked.connect(self._browse_video)
-        vid_row.addWidget(browse_btn)
-
-        clear_btn = QPushButton("✕")
-        clear_btn.setFixedSize(28, 28)
-        clear_btn.setStyleSheet(
-            "QPushButton{background:#2a2a2a;color:#888;border-radius:4px;"
-            "border:1px solid #3a3a3a;}"
-            "QPushButton:hover{color:#fe2c55;}"
-        )
-        clear_btn.clicked.connect(lambda: self._vid_path.clear())
-        vid_row.addWidget(clear_btn)
-        lay.addLayout(vid_row)
-        lay.addWidget(_div())
-
-        # ── Feathering ────────────────────────────────────────────────
-        lay.addWidget(_sec("EDGE FEATHERING"))
-
-        feat_row = QHBoxLayout()
-        feat_lbl = QLabel("Feather")
-        feat_lbl.setFixedWidth(82)
-        feat_lbl.setStyleSheet("color:#aaa;font-size:11px;background:transparent;")
-        feat_row.addWidget(feat_lbl)
-
-        self._feather_slider = QSlider(Qt.Orientation.Horizontal)
-        self._feather_slider.setRange(0, 20)
-        self._feather_slider.setValue(2)
-        feat_row.addWidget(self._feather_slider, 1)
-
-        self._feather_lbl = QLabel("2px")
-        self._feather_lbl.setFixedWidth(34)
-        self._feather_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        self._feather_lbl.setStyleSheet("color:#ccc;font-size:11px;background:transparent;")
-        feat_row.addWidget(self._feather_lbl)
-
-        self._feather_slider.valueChanged.connect(
-            lambda v: self._feather_lbl.setText(f"{v}px")
-        )
-        lay.addLayout(feat_row)
-
-        # ── Progress bar ──────────────────────────────────────────────
-        self._progress = QProgressBar()
-        self._progress.setRange(0, 100)
-        self._progress.setValue(0)
-        self._progress.setVisible(False)
-        self._progress.setStyleSheet(
-            "QProgressBar{background:#2a2a2a;border-radius:4px;height:8px;}"
-            "QProgressBar::chunk{background:#fe2c55;border-radius:4px;}"
-        )
-        lay.addWidget(self._progress)
-
-        lay.addStretch()
-        scroll.setWidget(body)
-        root.addWidget(scroll, 1)
-
-        # Footer
-        footer = QWidget()
-        footer.setStyleSheet("background:#111111;border-top:1px solid #2a2a2a;")
-        foot_lay = QHBoxLayout(footer)
-        foot_lay.setContentsMargins(12, 8, 12, 8)
-        foot_lay.setSpacing(8)
-
-        preview_btn = QPushButton("▶  Preview Frame")
-        preview_btn.setFixedHeight(34)
-        preview_btn.setStyleSheet(
-            "QPushButton{background:#2a2a2a;color:#ccc;border-radius:6px;"
-            "border:1px solid #444;font-size:12px;}"
-            "QPushButton:hover{background:#333;}"
-        )
-        preview_btn.clicked.connect(lambda: self._emit("preview"))
-        foot_lay.addWidget(preview_btn)
-
-        apply_btn = QPushButton("✓  Apply to Clip")
-        apply_btn.setFixedHeight(34)
-        apply_btn.setStyleSheet(
-            "QPushButton{background:#fe2c55;color:white;border-radius:6px;"
-            "border:none;font-size:12px;font-weight:bold;}"
-            "QPushButton:hover{background:#e0253f;}"
-        )
-        apply_btn.clicked.connect(lambda: self._emit("apply"))
-        foot_lay.addWidget(apply_btn)
-
-        root.addWidget(footer)
-
-    # ── Helpers ────────────────────────────────────────────────────────────
-
-    def _update_color_btn(self):
-        r, g, b = self._bg_color
-        self._color_btn.setStyleSheet(
-            f"QPushButton{{background:rgb({r},{g},{b});border-radius:4px;"
-            "border:1px solid #555;}"
-            "QPushButton:hover{border:2px solid #fe2c55;}"
-        )
-
-    def _set_color(self, rgb: tuple):
-        self._bg_color = rgb
-        self._update_color_btn()
+    # ---- state ----
+    def _paint_color(self):
+        self.color_btn.setStyleSheet(f"QPushButton{{background:{self._color};border:1px solid #555;border-radius:4px;}}")
 
     def _pick_color(self):
-        r, g, b = self._bg_color
-        c = QColorDialog.getColor(QColor(r, g, b), self, "Pick Background Color")
+        c = QColorDialog.getColor(QColor(self._color), self, "Background colour")
         if c.isValid():
-            self._set_color((c.red(), c.green(), c.blue()))
+            self._color = c.name()
+            self._paint_color()
+            self._style_changed()
 
-    def _browse_video(self):
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Select Background Video", "",
-            "Video Files (*.mp4 *.avi *.mov *.mkv *.webm);;All Files (*)"
-        )
-        if path:
-            self._vid_path.setText(path)
+    def _browse(self):
+        p, _ = QFileDialog.getOpenFileName(self, "Background image / video", "",
+                                           "Media (*.png *.jpg *.jpeg *.bmp *.webp *.mp4 *.mov *.mkv *.avi *.webm)")
+        if p:
+            self.media.setText(p)
+            self._style_changed()
 
-    def _get_method(self) -> str:
-        for btn in self._method_group.buttons():
-            if btn.isChecked():
-                return btn.property("method_val") or "auto"
-        return "auto"
+    def _sync_rows(self):
+        m = self.mode.currentData()
+        self.color_btn.setEnabled(m == "color")
+        self.media.setEnabled(m == "media")
+
+    def _style_changed(self, *_):
+        self._sync_rows()
+        self._style_timer.start()
+
+    def style(self) -> dict:
+        return {"mode": self.mode.currentData(), "color": self._color, "path": self.media.text(),
+                "feather": self.feather.value()}
+
+    def set_style(self, st: dict):
+        """Load a clip's matte_style without emitting."""
+        for w in (self.mode, self.feather):
+            w.blockSignals(True)
+        st = {**DEFAULT_STYLE, **(st or {})}
+        self.mode.setCurrentIndex(max(0, self.mode.findData(st["mode"])))
+        self.feather.setValue(int(st["feather"]))
+        self._color, _ = st["color"], self.media.setText(st["path"])
+        self._paint_color()
+        for w in (self.mode, self.feather):
+            w.blockSignals(False)
+        self._sync_rows()
 
     def _emit(self, action: str):
-        self.bg_removal_requested.emit({
-            "action":    action,
-            "method":    self._get_method(),
-            "bg_color":  self._bg_color,
-            "bg_video":  self._vid_path.text() or None,
-            "feather":   self._feather_slider.value(),
-        })
+        self.bg_removal_requested.emit({"action": action, "quality": self.quality.currentData(), **self.style(),
+                                        "bg_path": self.media.text()})
 
-    def set_progress(self, value: float):
-        pct = int(value * 100)
-        self._progress.setVisible(pct > 0 and pct < 100)
-        self._progress.setValue(pct)
+    # ---- called by the window ----
+    def set_busy(self, busy: bool):
+        self.apply_btn.setEnabled(self.have_model and not busy)
+        self.preview_btn.setEnabled(self.have_model and not busy)
+        self.remove_btn.setEnabled(not busy)
+        self.cancel_btn.setEnabled(busy)
+        self.progress.setVisible(busy)
+        if not busy:
+            self.progress.setValue(0)
+
+    def set_progress(self, pct: int):
+        self.progress.setValue(int(pct))
+
+    def set_status(self, text: str):
+        self.status.setText(text)
+
+    def set_preview(self, rgb):
+        """rgb: HxWx3 uint8 ndarray."""
+        h, w = rgb.shape[:2]
+        img = QImage(rgb.tobytes(), w, h, 3 * w, QImage.Format.Format_RGB888)
+        self.preview.setPixmap(QPixmap.fromImage(img).scaled(
+            self.preview.width(), self.preview.height(), Qt.AspectRatioMode.KeepAspectRatio))

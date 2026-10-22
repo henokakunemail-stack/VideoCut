@@ -108,7 +108,7 @@ Berikut adalah pemetaan implementasi fitur-fitur berbayar CapCut ke dalam codeba
 | :--- | :--- | :--- | :--- |
 | **Ekspor 4K 60FPS** | Berbayar | **Tersedia (Bebas)** | FFmpeg / OpenCV VideoWriter |
 | **Bebas Watermark** | Berbayar | **Tersedia (Bebas)** | Tanpa watermark sama sekali |
-| **Hapus Background AI** | Berbayar | **Tersedia** di `src/core/bg_remover.py` | `rembg` (U2Net AI) |
+| **Hapus Background AI** | Berbayar | **Tersedia** di `src/ai/matting.py` (bake matte, mode transparan/warna/gambar-video, feather) | U²-Net-small / IS-Net ONNX (Apache-2.0) + guided filter |
 | **Auto Caption / Subtitle** | Berbayar | **Tersedia** di `src/core/auto_caption.py` | `openai-whisper` (Offline AI) |
 | **Audio Denoise / Clean Voice** | Berbayar | **Tersedia** di `src/core/audio_chain.py` (voice FX); denoise = 4c | ffmpeg `arnndn`/`afftdn` |
 | **Beat Sync (Deteksi Ketukan)** | Berbayar | **Tersedia** di `src/core/beat_sync.py` | `librosa` onset & tempo tracking |

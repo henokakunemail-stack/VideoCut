@@ -24,9 +24,11 @@ if errorlevel 1 (
     echo [ERROR] pip install failed. Check your internet connection.
     pause & exit /b 1
 )
-echo       Optional AI packages (may take a few minutes)...
-pip install rembg openai-whisper librosa scipy --quiet
-echo       OK (AI packages installed or skipped).
+echo       AI runtime and bundled models...
+pip install onnxruntime imageio-ffmpeg --quiet
+python toolsetch_models.py
+if errorlevel 1 echo       [WARN] some models were not fetched; those features will show "model not installed".
+echo       (set VIDEOCUT_MODELS=all to also bundle the large High-quality models)
 
 REM ── Step 2: Create app icon if missing ───────────────────────
 echo [2/5] Checking assets...

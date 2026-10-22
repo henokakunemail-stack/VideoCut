@@ -59,7 +59,20 @@ def source_time(clip, time_ms: int) -> int:
 
 def fetch_clip_frame(readers: dict, clip, time_ms: int, fast: bool = False):
     """Raw source frame (RGB/RGBA) for a clip at timeline time. Shared by preview and export.
-    readers: path -> reader cache owned by the caller. fast=True skips slow interpolation."""
+    readers: path -> reader cache owned by the caller. fast=True skips slow interpolation.
+    A fresh baked matte (ai.matting) rides along as the alpha channel."""
+    f = _source_frame(readers, clip, time_ms, fast)
+    if f is not None and clip.ai and 'matte' in clip.ai:
+        from src.ai import matting
+        if matting.matte_status(clip) == 'ok':
+            a = matting.read_matte(readers, clip, source_time(clip, time_ms), f.shape)
+            if a is not None:
+                if f.shape[2] == 4:
+                    a = a * (f[..., 3].astype(np.float32) / 255.0)
+                f = np.dstack([f[..., :3], (a * 255 + .5).astype(np.uint8)])
+    return f
+
+def _source_frame(readers: dict, clip, time_ms: int, fast: bool = False):
     from src.core.project import ClipType
     from src.core.video_player import VideoReader, ImageReader
     path = clip.source_path
@@ -148,40 +161,37 @@ def effective_clip(clip, time_ms: int):
     return e, {'blur': props.get('blur', 0.0)}
 
 
-# ── background removal / replacement ──────────────────────────────────────────
+# -- background replacement: the matte is baked by ai.matting; Clip.remove_background/background_path are legacy and ignored --
 
-_matte_cache = {}   # clip.id -> (time_ms, shape, alpha)
-_bg_cache = {}      # path -> RGB image
+_bg_meta = {}   # path -> (synthetic Clip, duration_ms)
 
+def _hex_rgb(c):
+    c = c.lstrip('#')
+    return tuple(int(c[i:i + 2], 16) for i in (0, 2, 4)) if len(c) == 6 else (0, 255, 0)
 
-def _matte(clip, rgb, time_ms):
-    """Foreground alpha (float 0..1). Matted at <=480px height (ponytail: raise for quality)."""
-    key = (time_ms, rgb.shape)
-    hit = _matte_cache.get(clip.id)
-    if hit and hit[0] == key:
-        return hit[1]
-    from src.core.bg_remover import BackgroundRemover
-    h, w = rgb.shape[:2]
-    k = min(1.0, 480 / h)
-    small = cv2.resize(rgb, (max(1, int(w * k)), max(1, int(h * k)))) if k < 1 else rgb
-    bgra = BackgroundRemover.remove_background(cv2.cvtColor(small, cv2.COLOR_RGB2BGR))
-    a = bgra[..., 3].astype(np.float32) / 255.0
-    a = cv2.resize(a, (w, h)) if k < 1 else a
-    _matte_cache[clip.id] = (key, a)
-    return a
-
-
-def _background(path):
-    if path not in _bg_cache:
-        img = cv2.imread(path)
-        if img is None:
-            cap = cv2.VideoCapture(path)
-            ok, img = cap.read()
+def _bg_frame(get_frame, style, clip, time_ms):
+    """Replacement-background frame (image, or video looped by modulo) for matte mode 'media'; None if unusable."""
+    from src.core.project import Clip, ClipType
+    p = style.get('path')
+    if not p:
+        return None
+    if p not in _bg_meta:
+        isv = p.lower().endswith(('.mp4', '.mov', '.mkv', '.avi', '.webm'))
+        dur = 1000
+        if isv:
+            cap = cv2.VideoCapture(p)
+            dur = max(1, int(cap.get(cv2.CAP_PROP_FRAME_COUNT) / (cap.get(cv2.CAP_PROP_FPS) or 30) * 1000))
             cap.release()
-            img = img if ok else None
-        _bg_cache[path] = None if img is None else cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    return _bg_cache[path]
+        _bg_meta[p] = (Clip(clip_type=ClipType.VIDEO if isv else ClipType.IMAGE, source_path=p,
+                            timeline_end=dur, source_end=dur), dur)
+    bc, dur = _bg_meta[p]
+    return get_frame(bc, (time_ms - clip.timeline_start) % dur)
 
+def _cover(img, w, h):
+    k = max(w / img.shape[1], h / img.shape[0])
+    img = cv2.resize(img, (max(w, int(img.shape[1] * k + .5)), max(h, int(img.shape[0] * k + .5))))
+    y, x = (img.shape[0] - h) // 2, (img.shape[1] - w) // 2
+    return img[y:y + h, x:x + w]
 
 # ── per-clip layer ────────────────────────────────────────────────────────────
 
@@ -225,18 +235,23 @@ def _layer(clip, frame, time_ms, extra=None):
     if blur > 0.1:
         frame = cv2.GaussianBlur(frame, (0, 0), blur)
 
-    if clip.remove_background:
-        m = _matte(clip, frame, time_ms)
-        bg = _background(clip.background_path) if clip.background_path else None
+    style = None
+    if alpha is not None and clip.ai and 'matte' in clip.ai:
+        from src.ai import matting
+        style = matting.matte_style(clip)
+    if style:
+        if style['feather'] > 0:
+            alpha = cv2.GaussianBlur(alpha, (0, 0), style['feather'] / 2.0)
+        bg = None
+        if style['mode'] == 'color':
+            bg = np.empty_like(frame)
+            bg[:] = _hex_rgb(style['color'])
+        elif style['mode'] == 'media' and (extra or {}).get('bg') is not None:
+            bg = _cover(extra['bg'][..., :3], frame.shape[1], frame.shape[0])
         if bg is not None:
-            h, w = frame.shape[:2]
-            k = max(w / bg.shape[1], h / bg.shape[0])
-            bg = cv2.resize(bg, (max(w, int(bg.shape[1] * k + .5)), max(h, int(bg.shape[0] * k + .5))))
-            y, x = (bg.shape[0] - h) // 2, (bg.shape[1] - w) // 2
-            bg = bg[y:y + h, x:x + w]
-            frame = (frame * m[..., None] + bg * (1 - m[..., None])).astype(np.uint8)
-        else:
-            alpha = m if alpha is None else alpha * m
+            a3 = alpha[..., None]
+            frame = (frame * a3 + bg * (1 - a3) + .5).astype(np.uint8)
+            alpha = None
 
     if clip.chroma_key_enabled:
         rgba = FP.apply_chroma_key(frame, (clip.chroma_key_hue, clip.chroma_key_saturation,
@@ -301,6 +316,11 @@ def _place(rgb, alpha, clip, size, frac):
 
 def _clip_canvas(clip, get_frame, time_ms, size, frac):
     e, extra = effective_clip(clip, time_ms)
+    if clip.ai and 'matte' in clip.ai:
+        from src.ai import matting
+        st = matting.matte_style(clip)
+        if st and st['mode'] == 'media':
+            extra = {**extra, 'bg': _bg_frame(get_frame, st, clip, time_ms)}
     rgb, alpha = _layer(e, get_frame(clip, time_ms), time_ms, extra)
     if rgb is None:
         return None

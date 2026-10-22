@@ -3,6 +3,7 @@ verifies the hash, and refuses non-permissive licenses. Never run by the app at 
 
     python tools/fetch_models.py            # all
     python tools/fetch_models.py realesr    # ids containing 'realesr'
+    VIDEOCUT_MODELS=all python tools/fetch_models.py   # also the large optional models
 """
 
 import sys
@@ -11,6 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from src.ai import models  # noqa: E402
+import src.ai.matting  # noqa: E402,F401  (registers its models)
 
 OUT = Path(__file__).resolve().parents[1] / "models"
 
@@ -37,7 +39,9 @@ def fetch(m) -> bool:
 
 if __name__ == "__main__":
     want = sys.argv[1:]
-    todo = [m for m in models.MODELS.values() if not want or any(w in m.id for w in want)]
+    import os
+    all_ = os.environ.get("VIDEOCUT_MODELS") == "all"
+    todo = [m for m in models.MODELS.values() if (any(w in m.id for w in want) if want else all_ or not m.optional)]
     if not todo:
         print("registry empty: models are registered by the feature modules (src/ai/*) as they land")
     sys.exit(0 if all([fetch(m) for m in todo]) else 1)
