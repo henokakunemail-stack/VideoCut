@@ -12,6 +12,7 @@ import tempfile
 import cv2
 import numpy as np
 
+from src.core.audio_chain import chain_filters
 from src.core.project import ClipType
 from src.core.renderer import compose_frame, fetch_clip_frame, text_infos_at
 
@@ -53,8 +54,9 @@ def _audio_sources(project):
     for c in project.clips:
         if c.clip_type in (ClipType.VIDEO, ClipType.AUDIO) and c.source_path and not c.muted                 and c.volume > 0 and not c.freeze:
             segs = timemap.audio_segments(c)
-            if segs and has_audio(c.source_path):
-                yield dict(path=c.source_path, segs=segs, tl_start=c.timeline_start, tl_dur=c.duration,
+            src = c.audio_source or c.source_path
+            if segs and has_audio(src):
+                yield dict(path=src, fx=chain_filters(c.audio_fx), segs=segs, tl_start=c.timeline_start, tl_dur=c.duration,
                            volume=c.volume, fade_in=c.audio_fade_in, fade_out=c.audio_fade_out)
     for t in project.audio_tracks:
         if t.source_path and not t.muted and t.volume > 0:
@@ -73,9 +75,9 @@ def _atempo(speed: float) -> str:
     return ','.join(parts)
 
 
-def build_audio_cmd(sources, duration_s):
+def build_audio_cmd(sources, duration_s, base=1):
     """Returns (input_args, filter_complex, map_label) or None when there is no audio.
-    Audio inputs are numbered from 1 (input 0 is the silent video)."""
+    Audio inputs are numbered from `base` (1 on export: input 0 is the silent video)."""
     if not sources:
         return None
     ins, chains, labels = [], [], []
@@ -83,17 +85,17 @@ def build_audio_cmd(sources, duration_s):
         ins += ['-i', s['path']]
         segs, n = s['segs'], len(s['segs'])
         if n > 1:
-            chains.append(f"[{i + 1}:a]asplit={n}" + ''.join(f'[i{i}_{k}]' for k in range(n)))
+            chains.append(f"[{i + base}:a]asplit={n}" + ''.join(f'[i{i}_{k}]' for k in range(n)))
         for k, (lo, hi, rev, spd) in enumerate(segs):
             f = [f"atrim=start={lo/1000:.3f}:end={hi/1000:.3f}", 'asetpts=PTS-STARTPTS']
             if rev:
                 f.append('areverse')
             if abs(spd - 1.0) > 1e-3:
                 f.append(_atempo(spd))
-            src = f"[i{i}_{k}]" if n > 1 else f"[{i + 1}:a]"
+            src = f"[i{i}_{k}]" if n > 1 else f"[{i + base}:a]"
             chains.append(f"{src}{','.join(f)}[s{i}_{k}]")
         dur = s['tl_dur'] / 1000
-        tail = [f"apad=whole_dur={dur:.3f}", f"atrim=0:{dur:.3f}"]
+        tail = ([s['fx']] if s.get('fx') else []) + [f"apad=whole_dur={dur:.3f}", f"atrim=0:{dur:.3f}"]
         if s['fade_in'] > 0:
             tail.append(f"afade=t=in:st=0:d={s['fade_in']:.3f}")
         if s['fade_out'] > 0:

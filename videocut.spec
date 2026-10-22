@@ -44,7 +44,8 @@ hidden_imports = [
     'src.core.beat_sync',
     'src.core.keyframe_engine',
     'src.ui.keyframe_panel',
-    'src.core.audio_fx',
+    'src.core.audio_chain',
+    'src.core.audio_mix',
     'src.ui.audio_fx_panel',
     'src.ui.effects_panel',
     # AI (src/ai): heavy libs are imported lazily

@@ -110,7 +110,7 @@ Berikut adalah pemetaan implementasi fitur-fitur berbayar CapCut ke dalam codeba
 | **Bebas Watermark** | Berbayar | **Tersedia (Bebas)** | Tanpa watermark sama sekali |
 | **Hapus Background AI** | Berbayar | **Tersedia** di `src/core/bg_remover.py` | `rembg` (U2Net AI) |
 | **Auto Caption / Subtitle** | Berbayar | **Tersedia** di `src/core/auto_caption.py` | `openai-whisper` (Offline AI) |
-| **Audio Denoise / Clean Voice** | Berbayar | **Tersedia** di `src/core/audio_fx.py` | `scipy.signal` bandpass + noise gate |
+| **Audio Denoise / Clean Voice** | Berbayar | **Tersedia** di `src/core/audio_chain.py` (voice FX); denoise = 4c | ffmpeg `arnndn`/`afftdn` |
 | **Beat Sync (Deteksi Ketukan)** | Berbayar | **Tersedia** di `src/core/beat_sync.py` | `librosa` onset & tempo tracking |
 | **Keyframe Animation Pro** | Berbayar | **Tersedia** di `src/core/keyframe_engine.py` | Bezier curve easing interpolation |
 | **Color LUT Grading** | Berbayar | **Dapat ditambahkan** | FFmpeg `lut3d` / OpenCV trilinear LUT |

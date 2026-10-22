@@ -30,6 +30,14 @@ class MainWindow(QMainWindow):
         self.play_timer.setInterval(33)  # ~30fps
         self.play_timer.timeout.connect(self._on_play_tick)
 
+        from src.ui.audio_preview import AudioPreview
+        self.audio = AudioPreview(self)
+        self._mix_gen, self._mix_key, self._mix_worker, self._mix_thread = 0, None, None, None
+        self._mix_timer = QTimer(self)
+        self._mix_timer.setSingleShot(True)
+        self._mix_timer.setInterval(400)
+        self._mix_timer.timeout.connect(self._start_mix)
+
         self.setWindowTitle("VideoCut")
         self.setMinimumSize(1280, 720)
         self.resize(1600, 900)
@@ -229,6 +237,7 @@ class MainWindow(QMainWindow):
         self.preview_panel.play_toggled.connect(self._toggle_play)
         self.preview_panel.seek_requested.connect(self._seek_to)
         self.preview_panel.time_changed.connect(self._seek_to)
+        self.preview_panel.volume_slider.valueChanged.connect(lambda v: self.audio.set_volume(v / 100))
 
         # Properties -> project update
         self.properties_panel.clip_changed.connect(self._on_clip_property_changed)
@@ -310,6 +319,7 @@ class MainWindow(QMainWindow):
         self.preview_panel.set_project(self.project)
         self.preview_panel.seek_to(0)
         self.properties_panel.clear()
+        self._schedule_mix()
 
     # ---- Playback ----
 
@@ -317,8 +327,10 @@ class MainWindow(QMainWindow):
         self.is_playing = playing
         if playing:
             self.play_timer.start()
+            self.audio.play(self.current_time_ms)
         else:
             self.play_timer.stop()
+            self.audio.pause()
 
     def _on_play_tick(self):
         if not self.project.settings.duration:
@@ -327,10 +339,12 @@ class MainWindow(QMainWindow):
             self.preview_panel.set_playing(False)
             return
 
-        self.current_time_ms += 33
+        from src.core.audio_mix import pick_time
+        self.current_time_ms = pick_time(self.audio.position_ms(), self.current_time_ms, 33)  # audio is the master clock
         if self.current_time_ms >= self.project.settings.duration:
             self.current_time_ms = 0
             self.play_timer.stop()
+            self.audio.pause()
             self.is_playing = False
             self.preview_panel.set_playing(False)
 
@@ -339,8 +353,45 @@ class MainWindow(QMainWindow):
 
     def _seek_to(self, time_ms: int):
         self.current_time_ms = max(0, time_ms)
+        if self.is_playing:
+            self.audio.seek(self.current_time_ms)
         self.preview_panel.seek_to(self.current_time_ms)
         self.timeline_panel.set_playhead(self.current_time_ms)
+
+    # ---- Audio preview (mix = same filtergraph as export) ----
+
+    def _schedule_mix(self):
+        self._mix_timer.start()
+
+    def _start_mix(self):
+        from src.core.audio_mix import mix_key, render_mix
+        from src.ui.workers import Worker, start_worker
+        key = mix_key(self.project)
+        if key == self._mix_key:
+            return
+        if self._mix_worker:
+            self._mix_worker.cancel()
+        self._mix_gen += 1
+        gen = self._mix_gen
+        w = Worker(render_mix, self.project)
+
+        def done(wav):
+            if gen != self._mix_gen:          # superseded
+                return
+            self._mix_worker = None
+            if wav is not None or key == mix_key(self.project):
+                self._mix_key = key
+                self.audio.set_source(wav)
+                if self.is_playing and wav:
+                    self.audio.play(self.current_time_ms)
+            self.status_bar.clearMessage()
+            if key != mix_key(self.project):  # edited while mixing
+                self._schedule_mix()
+        w.finished.connect(done)
+        w.error.connect(lambda m: self.status_bar.showMessage(f"Audio mix failed: {m}"))
+        self._mix_worker = w
+        self._mix_thread = start_worker(w, self)
+        self.status_bar.showMessage("Mixing audio...")
 
     def _on_time_changed(self, time_ms: int):
         self.current_time_ms = time_ms
@@ -443,6 +494,7 @@ class MainWindow(QMainWindow):
         self._refresh_timeline()
 
     def _on_clip_property_changed(self, clip_id: str):
+        self._schedule_mix()
         self.preview_panel.seek_to(self.current_time_ms)
         self.timeline_panel.update()
 
@@ -493,6 +545,7 @@ class MainWindow(QMainWindow):
         self.timeline_panel.set_project(self.project)
         self.preview_panel.set_project(self.project)
         self.preview_panel.seek_to(self.current_time_ms)
+        self._schedule_mix()
 
     # ---- AI Tools ----
 
@@ -572,18 +625,51 @@ class MainWindow(QMainWindow):
         self._beat_thread = start_worker(w, self)
 
     def _open_voice_fx(self):
+        from src.core.audio_mix import render_audition
         from src.ui.audio_fx_panel import AudioFxPanel
+        from src.ui.audio_preview import AudioPreview
+        from src.ui.workers import Worker, start_worker
         dlg = AudioFxPanel(self)
         dlg.setWindowFlags(Qt.WindowType.Window)
         dlg.setWindowTitle("Voice Changer & Audio FX")
-        dlg.resize(380, 560)
+        dlg.resize(380, 600)
+        sel = self._get_selected_clip()
+        if sel:
+            dlg.set_chain(sel.audio_fx)
+        else:
+            dlg.status.setText("Select a clip to apply voice FX")
+        target = sel.id if sel else None      # survives selection changes while the dialog is open
+        aud = AudioPreview(dlg)
 
-        def store(chain):    # DSP lands in 4c (audio_chain); the chain is stored on the clip now
-            c = self._get_selected_clip()
+        def store(chain):
+            c = self.project.get_clip(target) if target else None
             if c:
                 c.audio_fx = [{"name": n, "params": p} for n, p in chain]
                 self.project.is_modified = True
+                self._schedule_mix()
+
+        def audition(chain):
+            c = self.project.get_clip(target) if target else None
+            if not c or not (c.audio_source or c.source_path):
+                dlg.status.setText("Select a clip with audio first")
+                return
+            w = Worker(render_audition, c, [{"name": n, "params": p} for n, p in chain])
+
+            def done(wav):
+                dlg.audition_btn.setEnabled(True)
+                if wav:
+                    aud.set_source(None)
+                    aud.set_source(wav)
+                    aud.play(0)
+                    dlg.status.setText("")
+            dlg.audition_btn.setEnabled(False)
+            dlg.status.setText("Rendering...")
+            w.finished.connect(done)
+            w.error.connect(lambda m: dlg.status.setText(f"Audition failed: {m[:120]}"))
+            dlg._aud_worker = w
+            dlg._aud_thread = start_worker(w, dlg)
         dlg.fx_chain_changed.connect(store)
+        dlg.audition_requested.connect(audition)
         dlg.show()
         self._fx_dlg = dlg
 
@@ -677,7 +763,18 @@ class MainWindow(QMainWindow):
         else:
             super().keyPressEvent(event)
 
+    def _stop_mix(self):
+        self._mix_timer.stop()
+        if self._mix_worker:
+            self._mix_worker.cancel()
+        try:
+            if self._mix_thread:
+                self._mix_thread.wait(3000)
+        except RuntimeError:                  # thread already deleted
+            pass
+
     def closeEvent(self, event):
+        self._stop_mix()
         if self.project.is_modified:
             reply = QMessageBox.question(
                 self, "Unsaved Changes",

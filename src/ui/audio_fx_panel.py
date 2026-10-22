@@ -1,11 +1,11 @@
-"""
-Audio FX Panel — Pitch shift, robot voice, echo, reverb, distortion, chorus
-"""
+"""Voice changer / audio FX panel. Emits [(name, params)]; the chain is rendered by core.audio_chain (ffmpeg)."""
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QSlider, QGroupBox, QCheckBox, QComboBox, QScrollArea,
 )
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
+
+from src.core.audio_chain import PRESETS
 
 _BTN = ("QPushButton{background:#333;color:#ccc;border:1px solid #555;"
         "border-radius:4px;padding:4px 10px;}"
@@ -14,222 +14,162 @@ _GRP = ("QGroupBox{color:#aaa;font-size:11px;border:1px solid #333;"
         "border-radius:6px;margin-top:8px;padding-top:6px;}")
 _LBL = "color:#aaa;font-size:11px;background:transparent;"
 
-
-def _row(layout, label: str, mn: int, mx: int, default: int,
-         on_change, unit: str = "") -> QSlider:
-    r = QHBoxLayout()
-    lb = QLabel(label)
-    lb.setFixedWidth(90)
-    lb.setStyleSheet(_LBL)
-    r.addWidget(lb)
-    sl = QSlider(Qt.Orientation.Horizontal)
-    sl.setRange(mn, mx)
-    sl.setValue(default)
-    r.addWidget(sl, 1)
-    vl = QLabel(f"{default}{unit}")
-    vl.setFixedWidth(40)
-    vl.setStyleSheet(_LBL)
-
-    def _u(v):
-        vl.setText(f"{v}{unit}")
-        on_change(v)
-
-    sl.valueChanged.connect(_u)
-    r.addWidget(vl)
-    layout.addLayout(r)
-    return sl
+# name -> (title, [(param, label, min, max, default, unit, scale)])  param value = slider / scale
+EFFECTS = {
+    'pitch':      ("Pitch Shift", [('semitones', "Semitones", -12, 12, 0, " st", 1)]),
+    'robot':      ("Robot Voice", [('freq_hz', "Frequency", 50, 400, 100, " Hz", 1)]),
+    'echo':       ("Echo", [('delay_ms', "Delay", 50, 1000, 300, " ms", 1), ('decay', "Decay", 0, 100, 50, "%", 100)]),
+    'reverb':     ("Reverb", [('room_size', "Room Size", 0, 100, 50, "%", 100), ('wet', "Wet Mix", 0, 100, 40, "%", 100)]),
+    'distortion': ("Distortion", [('drive', "Drive", 0, 100, 50, "%", 100)]),
+    'chorus':     ("Chorus", [('rate_hz', "Rate", 1, 50, 15, " x0.1Hz", 10), ('wet', "Wet", 0, 100, 50, "%", 100)]),
+    # preset-only building blocks (no group): kept so loaded presets round-trip
+    'highpass':   (None, [('hz', "", 20, 2000, 300, "", 1)]),
+    'lowpass':    (None, [('hz', "", 500, 20000, 3400, "", 1)]),
+    'vibrato':    (None, [('hz', "", 1, 20, 6, "", 1), ('depth', "", 0, 100, 50, "", 100)]),
+}
 
 
 class AudioFxPanel(QWidget):
-    """Audio effects control panel."""
-
-    fx_chain_changed = pyqtSignal(list)   # emits list of (name, params)
+    fx_chain_changed = pyqtSignal(list)   # debounced; list of (name, params)
+    audition_requested = pyqtSignal(list)
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        # State
-        self._pitch      = 0
-        self._robot_en   = False
-        self._robot_freq = 100
-        self._echo_en    = False
-        self._echo_delay = 300
-        self._echo_decay = 50
-        self._reverb_en  = False
-        self._reverb_room = 50
-        self._reverb_wet  = 40
-        self._dist_en    = False
-        self._dist_drive = 50
-        self._chorus_en  = False
-        self._chorus_rate = 15
-        self._chorus_wet  = 50
+        self._checks, self._sliders, self._extra = {}, {}, {}   # extra: preset-only blocks currently active
+        self._loading = False
+        self._debounce = QTimer(self)
+        self._debounce.setSingleShot(True)
+        self._debounce.setInterval(250)
+        self._debounce.timeout.connect(lambda: self.fx_chain_changed.emit(self.get_chain()))
         self._build_ui()
 
     def _build_ui(self):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
-
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setStyleSheet("QScrollArea{border:none;}")
-
         container = QWidget()
         lay = QVBoxLayout(container)
         lay.setContentsMargins(10, 10, 10, 10)
         lay.setSpacing(10)
 
-        # ── Pitch Shift ──────────────────────────────────────────────────────
-        pitch_grp = QGroupBox("Pitch Shift")
-        pitch_grp.setStyleSheet(_GRP)
-        pl = QVBoxLayout(pitch_grp)
-        _row(pl, "Semitones", -12, 12, 0, self._set_pitch, " st")
-        presets_row = QHBoxLayout()
-        for label, val in [("-12", -12), ("-5", -5), ("0", 0), ("+5", 5), ("+12", 12)]:
-            b = QPushButton(label)
-            b.setFixedHeight(24)
-            b.setStyleSheet(_BTN)
-            b.clicked.connect(lambda _, v=val: self._set_pitch_preset(v))
-            presets_row.addWidget(b)
-        pl.addLayout(presets_row)
-        lay.addWidget(pitch_grp)
+        top = QHBoxLayout()
+        lb = QLabel("Preset")
+        lb.setStyleSheet(_LBL)
+        top.addWidget(lb)
+        self.preset_combo = QComboBox()
+        self.preset_combo.addItems(["Custom", *PRESETS])
+        self.preset_combo.activated.connect(self._on_preset)
+        top.addWidget(self.preset_combo, 1)
+        reset = QPushButton("Reset")
+        reset.setStyleSheet(_BTN)
+        reset.clicked.connect(lambda: self.set_chain([]) or self._changed())
+        top.addWidget(reset)
+        lay.addLayout(top)
 
-        # ── Robot Voice ──────────────────────────────────────────────────────
-        robot_grp = QGroupBox("Robot Voice")
-        robot_grp.setStyleSheet(_GRP)
-        rl = QVBoxLayout(robot_grp)
-        self._robot_cb = QCheckBox("Enable Robot Voice")
-        self._robot_cb.setStyleSheet("color:white;")
-        self._robot_cb.toggled.connect(self._set_robot_en)
-        rl.addWidget(self._robot_cb)
-        _row(rl, "Frequency", 50, 400, 100, self._set_robot_freq, " Hz")
-        lay.addWidget(robot_grp)
+        for name, (title, params) in EFFECTS.items():
+            if title is None:
+                continue
+            grp = QGroupBox(title)
+            grp.setStyleSheet(_GRP)
+            gl = QVBoxLayout(grp)
+            if name != 'pitch':
+                cb = QCheckBox(f"Enable {title}")
+                cb.setStyleSheet("color:white;")
+                cb.toggled.connect(self._changed)
+                gl.addWidget(cb)
+                self._checks[name] = cb
+            for pname, label, mn, mx, default, unit, scale in params:
+                gl.addLayout(self._slider_row(name, pname, label, mn, mx, default, unit))
+            lay.addWidget(grp)
 
-        # ── Echo ─────────────────────────────────────────────────────────────
-        echo_grp = QGroupBox("Echo")
-        echo_grp.setStyleSheet(_GRP)
-        el = QVBoxLayout(echo_grp)
-        self._echo_cb = QCheckBox("Enable Echo")
-        self._echo_cb.setStyleSheet("color:white;")
-        self._echo_cb.toggled.connect(self._set_echo_en)
-        el.addWidget(self._echo_cb)
-        _row(el, "Delay",  50, 1000, 300, self._set_echo_delay, " ms")
-        _row(el, "Decay",   0,  100,  50, self._set_echo_decay, "%")
-        lay.addWidget(echo_grp)
-
-        # ── Reverb ───────────────────────────────────────────────────────────
-        rev_grp = QGroupBox("Reverb")
-        rev_grp.setStyleSheet(_GRP)
-        rv = QVBoxLayout(rev_grp)
-        self._reverb_cb = QCheckBox("Enable Reverb")
-        self._reverb_cb.setStyleSheet("color:white;")
-        self._reverb_cb.toggled.connect(self._set_reverb_en)
-        rv.addWidget(self._reverb_cb)
-        _row(rv, "Room Size",  0, 100, 50, self._set_reverb_room, "%")
-        _row(rv, "Wet Mix",    0, 100, 40, self._set_reverb_wet,  "%")
-        lay.addWidget(rev_grp)
-
-        # ── Distortion ───────────────────────────────────────────────────────
-        dist_grp = QGroupBox("Distortion")
-        dist_grp.setStyleSheet(_GRP)
-        dl = QVBoxLayout(dist_grp)
-        self._dist_cb = QCheckBox("Enable Distortion")
-        self._dist_cb.setStyleSheet("color:white;")
-        self._dist_cb.toggled.connect(self._set_dist_en)
-        dl.addWidget(self._dist_cb)
-        _row(dl, "Drive", 0, 100, 50, self._set_dist_drive, "%")
-        lay.addWidget(dist_grp)
-
-        # ── Chorus ───────────────────────────────────────────────────────────
-        chor_grp = QGroupBox("Chorus")
-        chor_grp.setStyleSheet(_GRP)
-        cl = QVBoxLayout(chor_grp)
-        self._chorus_cb = QCheckBox("Enable Chorus")
-        self._chorus_cb.setStyleSheet("color:white;")
-        self._chorus_cb.toggled.connect(self._set_chorus_en)
-        cl.addWidget(self._chorus_cb)
-        _row(cl, "Rate",  1,  50, 15, self._set_chorus_rate, " ×0.1Hz")
-        _row(cl, "Wet",   0, 100, 50, self._set_chorus_wet,  "%")
-        lay.addWidget(chor_grp)
-
-        # Apply button
-        apply_btn = QPushButton("▶ Apply FX Chain to Clip")
-        apply_btn.setFixedHeight(34)
-        apply_btn.setStyleSheet(
-            "QPushButton{background:#fe2c55;color:white;border:none;"
-            "border-radius:5px;font-size:13px;font-weight:600;}"
-            "QPushButton:hover{background:#e0254d;}")
-        apply_btn.clicked.connect(self._emit_chain)
-        lay.addWidget(apply_btn)
-
+        row = QHBoxLayout()
+        self.audition_btn = QPushButton("Audition 8 s")
+        self.audition_btn.setStyleSheet(_BTN)
+        self.audition_btn.clicked.connect(lambda: self.audition_requested.emit(self.get_chain()))
+        row.addWidget(self.audition_btn)
+        lay.addLayout(row)
+        self.status = QLabel("")
+        self.status.setStyleSheet(_LBL)
+        lay.addWidget(self.status)
         lay.addStretch()
         scroll.setWidget(container)
         outer.addWidget(scroll)
 
-    # ── Setters ───────────────────────────────────────────────────────────────
-    def _set_pitch(self, v):       self._pitch = v;        self._emit_chain()
-    def _set_pitch_preset(self, v):
-        self._pitch = v
-        self._emit_chain()
+    def _slider_row(self, name, pname, label, mn, mx, default, unit):
+        r = QHBoxLayout()
+        lb = QLabel(label)
+        lb.setFixedWidth(90)
+        lb.setStyleSheet(_LBL)
+        r.addWidget(lb)
+        sl = QSlider(Qt.Orientation.Horizontal)
+        sl.setRange(mn, mx)
+        sl.setValue(default)
+        r.addWidget(sl, 1)
+        vl = QLabel(f"{default}{unit}")
+        vl.setFixedWidth(60)
+        vl.setStyleSheet(_LBL)
+        r.addWidget(vl)
 
-    def _set_robot_en(self, v):    self._robot_en   = v;   self._emit_chain()
-    def _set_robot_freq(self, v):  self._robot_freq = v;   self._emit_chain()
-    def _set_echo_en(self, v):     self._echo_en    = v;   self._emit_chain()
-    def _set_echo_delay(self, v):  self._echo_delay = v;   self._emit_chain()
-    def _set_echo_decay(self, v):  self._echo_decay = v;   self._emit_chain()
-    def _set_reverb_en(self, v):   self._reverb_en  = v;   self._emit_chain()
-    def _set_reverb_room(self, v): self._reverb_room = v;  self._emit_chain()
-    def _set_reverb_wet(self, v):  self._reverb_wet = v;   self._emit_chain()
-    def _set_dist_en(self, v):     self._dist_en    = v;   self._emit_chain()
-    def _set_dist_drive(self, v):  self._dist_drive = v;   self._emit_chain()
-    def _set_chorus_en(self, v):   self._chorus_en  = v;   self._emit_chain()
-    def _set_chorus_rate(self, v): self._chorus_rate = v;  self._emit_chain()
-    def _set_chorus_wet(self, v):  self._chorus_wet = v;   self._emit_chain()
+        def moved(v):
+            vl.setText(f"{v}{unit}")
+            self._changed()
+        sl.valueChanged.connect(moved)
+        self._sliders[(name, pname)] = (sl, default)
+        return r
 
-    def _emit_chain(self):
-        chain = []
-        if self._pitch != 0:
-            chain.append(("pitch", {"semitones": float(self._pitch)}))
-        if self._robot_en:
-            chain.append(("robot", {"freq_hz": float(self._robot_freq)}))
-        if self._echo_en:
-            chain.append(("echo", {
-                "delay_ms": float(self._echo_delay),
-                "decay":    self._echo_decay / 100.0,
-            }))
-        if self._reverb_en:
-            chain.append(("reverb", {
-                "room_size": self._reverb_room / 100.0,
-                "wet":       self._reverb_wet  / 100.0,
-            }))
-        if self._dist_en:
-            chain.append(("distortion", {"drive": self._dist_drive / 100.0}))
-        if self._chorus_en:
-            chain.append(("chorus", {
-                "rate_hz": self._chorus_rate / 10.0,
-                "wet":     self._chorus_wet  / 100.0,
-            }))
-        self.fx_chain_changed.emit(chain)
+    def _changed(self, *_):
+        if self._loading:
+            return
+        if self.preset_combo.currentIndex() and self.sender() is not self.preset_combo:
+            self.preset_combo.setCurrentIndex(0)
+        self._debounce.start()
+
+    def _on_preset(self, i):
+        if i > 0:
+            self.set_chain([{'name': n, 'params': dict(p)} for n, p in PRESETS[self.preset_combo.itemText(i)]])
+            self._debounce.start()
+
+    # ---- state <-> chain ----
+    def _scale(self, name, pname):
+        return next(p[6] for p in EFFECTS[name][1] if p[0] == pname)
+
+    def set_chain(self, chain):
+        """chain: [{name, params}] (Clip.audio_fx). Does not emit."""
+        self._loading = True
+        try:
+            for (name, pname), (sl, default) in self._sliders.items():
+                sl.setValue(default)
+            for cb in self._checks.values():
+                cb.setChecked(False)
+            self._extra = {}
+            for fx in chain:
+                name, params = fx['name'], fx.get('params') or {}
+                if name not in EFFECTS:
+                    continue
+                if name in self._checks:
+                    self._checks[name].setChecked(True)
+                if EFFECTS[name][0] is None:
+                    self._extra[name] = params
+                    continue
+                for pname, v in params.items():
+                    if (name, pname) in self._sliders:
+                        self._sliders[(name, pname)][0].setValue(round(v * self._scale(name, pname)))
+        finally:
+            self._loading = False
 
     def get_chain(self) -> list:
         chain = []
-        if self._pitch != 0:
-            chain.append(("pitch", {"semitones": float(self._pitch)}))
-        if self._robot_en:
-            chain.append(("robot", {"freq_hz": float(self._robot_freq)}))
-        if self._echo_en:
-            chain.append(("echo", {
-                "delay_ms": float(self._echo_delay),
-                "decay": self._echo_decay / 100.0,
-            }))
-        if self._reverb_en:
-            chain.append(("reverb", {
-                "room_size": self._reverb_room / 100.0,
-                "wet": self._reverb_wet / 100.0,
-            }))
-        if self._dist_en:
-            chain.append(("distortion", {"drive": self._dist_drive / 100.0}))
-        if self._chorus_en:
-            chain.append(("chorus", {
-                "rate_hz": self._chorus_rate / 10.0,
-                "wet": self._chorus_wet / 100.0,
-            }))
+        for name, (title, params) in EFFECTS.items():
+            if title is None:
+                if name in self._extra:
+                    chain.append((name, dict(self._extra[name])))
+                continue
+            if name == 'pitch':
+                if self._sliders[(name, 'semitones')][0].value() == 0:
+                    continue
+            elif not self._checks[name].isChecked():
+                continue
+            chain.append((name, {p[0]: float(self._sliders[(name, p[0])][0].value()) / p[6] for p in params}))
         return chain
